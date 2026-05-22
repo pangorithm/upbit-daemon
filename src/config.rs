@@ -36,8 +36,10 @@ pub struct ApiConfig {
     pub api_calls_per_second: usize,
     #[serde(default = "default_partition_retain_days")]
     pub partition_retain_days: u32,
-    #[serde(default = "default_partition_create_months")]
-    pub partition_create_months: u32,
+    #[serde(default = "default_partition_retain_months")]
+    pub partition_retain_months: u32,
+    #[serde(default = "default_partition_create")]
+    pub partition_create: u32,
 }
 
 fn default_rest_url() -> String { "https://api.upbit.com".to_string() }
@@ -46,4 +48,5 @@ fn default_candle_unit() -> u32 { 10 }
 fn default_batch_size() -> u32 { 200 }
 fn default_api_calls_per_second() -> usize { 5 }
 fn default_partition_retain_days() -> u32 { 30 }
-fn default_partition_create_months() -> u32 { 3 }
+fn default_partition_retain_months() -> u32 { 6 }
+fn default_partition_create() -> u32 { 3 }

@@ -100,7 +100,8 @@ candle_unit: 10
 batch_size: 200
 api_calls_per_second: 5
 partition_retain_days: 30
-partition_create_months: 3
+partition_retain_months: 6
+partition_create: 3
 ```
 
 ## 데이터 모델 (API 응답 필드 그대로 사용)
