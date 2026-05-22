@@ -1,4 +1,5 @@
 pub mod init;
+pub mod partition;
 
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use tracing::info;
