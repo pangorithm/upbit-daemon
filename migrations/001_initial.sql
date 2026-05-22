@@ -1,0 +1,153 @@
+CREATE TABLE markets (
+    market VARCHAR(30) PRIMARY KEY,
+    korean_name TEXT,
+    english_name TEXT,
+    market_event_warning BOOLEAN DEFAULT FALSE,
+    market_event_caution_price_fluctuations BOOLEAN DEFAULT FALSE,
+    market_event_caution_trading_volume_soloing BOOLEAN DEFAULT FALSE,
+    market_event_caution_deposit_amount_soloing BOOLEAN DEFAULT FALSE,
+    market_event_caution_global_price_differences BOOLEAN DEFAULT FALSE,
+    market_event_caution_concentration_of_small_accounts BOOLEAN DEFAULT FALSE
+);
+
+CREATE TABLE tickers (
+    market VARCHAR(30) NOT NULL,
+    trade_date VARCHAR(8) NOT NULL,
+    trade_time VARCHAR(6) NOT NULL,
+    trade_date_kst VARCHAR(8) NOT NULL,
+    trade_time_kst VARCHAR(6) NOT NULL,
+    trade_timestamp BIGINT NOT NULL,
+    opening_price DOUBLE PRECISION NOT NULL,
+    high_price DOUBLE PRECISION NOT NULL,
+    low_price DOUBLE PRECISION NOT NULL,
+    trade_price DOUBLE PRECISION NOT NULL,
+    prev_closing_price DOUBLE PRECISION NOT NULL,
+    change VARCHAR(10) NOT NULL,
+    change_price DOUBLE PRECISION NOT NULL,
+    change_rate DOUBLE PRECISION NOT NULL,
+    signed_change_price DOUBLE PRECISION NOT NULL,
+    signed_change_rate DOUBLE PRECISION NOT NULL,
+    trade_volume DOUBLE PRECISION NOT NULL,
+    acc_trade_price DOUBLE PRECISION NOT NULL,
+    acc_trade_price_24h DOUBLE PRECISION,
+    acc_trade_volume DOUBLE PRECISION NOT NULL,
+    acc_trade_volume_24h DOUBLE PRECISION,
+    highest_52_week_price DOUBLE PRECISION,
+    highest_52_week_date VARCHAR(10),
+    lowest_52_week_price DOUBLE PRECISION,
+    lowest_52_week_date VARCHAR(10),
+    timestamp BIGINT NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+) PARTITION BY RANGE (trade_date);
+
+CREATE TABLE tickers_y2026m01 PARTITION OF tickers FOR VALUES FROM ('20260101') TO ('20260201');
+
+CREATE TABLE trades (
+    market VARCHAR(30) NOT NULL,
+    trade_date_utc VARCHAR(10) NOT NULL,
+    trade_time_utc VARCHAR(12) NOT NULL,
+    timestamp BIGINT NOT NULL,
+    trade_price DOUBLE PRECISION NOT NULL,
+    trade_volume DOUBLE PRECISION NOT NULL,
+    prev_closing_price DOUBLE PRECISION NOT NULL,
+    change_price DOUBLE PRECISION NOT NULL,
+    ask_bid VARCHAR(10) NOT NULL,
+    sequential_id BIGINT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+) PARTITION BY RANGE (trade_date_utc);
+
+CREATE TABLE trades_y2026m01 PARTITION OF trades FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
+
+CREATE TABLE candles_seconds (
+    market VARCHAR(30) NOT NULL,
+    candle_date_time_utc VARCHAR(20) NOT NULL,
+    candle_date_time_kst VARCHAR(20) NOT NULL,
+    opening_price DOUBLE PRECISION NOT NULL,
+    high_price DOUBLE PRECISION NOT NULL,
+    low_price DOUBLE PRECISION NOT NULL,
+    trade_price DOUBLE PRECISION NOT NULL,
+    timestamp BIGINT NOT NULL,
+    candle_acc_trade_price DOUBLE PRECISION NOT NULL,
+    candle_acc_trade_volume DOUBLE PRECISION NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+) PARTITION BY RANGE (candle_date_time_utc);
+
+CREATE TABLE candles_seconds_y2026m01d01 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-01T00:00:00') TO ('2026-01-02T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d02 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-02T00:00:00') TO ('2026-01-03T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d03 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-03T00:00:00') TO ('2026-01-04T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d04 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-04T00:00:00') TO ('2026-01-05T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d05 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-05T00:00:00') TO ('2026-01-06T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d06 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-06T00:00:00') TO ('2026-01-07T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d07 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-07T00:00:00') TO ('2026-01-08T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d08 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-08T00:00:00') TO ('2026-01-09T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d09 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-09T00:00:00') TO ('2026-01-10T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d10 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-10T00:00:00') TO ('2026-01-11T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d11 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-11T00:00:00') TO ('2026-01-12T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d12 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-12T00:00:00') TO ('2026-01-13T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d13 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-13T00:00:00') TO ('2026-01-14T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d14 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-14T00:00:00') TO ('2026-01-15T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d15 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-15T00:00:00') TO ('2026-01-16T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d16 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-16T00:00:00') TO ('2026-01-17T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d17 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-17T00:00:00') TO ('2026-01-18T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d18 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-18T00:00:00') TO ('2026-01-19T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d19 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-19T00:00:00') TO ('2026-01-20T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d20 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-20T00:00:00') TO ('2026-01-21T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d21 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-21T00:00:00') TO ('2026-01-22T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d22 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-22T00:00:00') TO ('2026-01-23T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d23 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-23T00:00:00') TO ('2026-01-24T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d24 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-24T00:00:00') TO ('2026-01-25T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d25 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-25T00:00:00') TO ('2026-01-26T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d26 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-26T00:00:00') TO ('2026-01-27T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d27 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-27T00:00:00') TO ('2026-01-28T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d28 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-28T00:00:00') TO ('2026-01-29T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d29 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-29T00:00:00') TO ('2026-01-30T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d30 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-30T00:00:00') TO ('2026-01-31T00:00:00');
+CREATE TABLE candles_seconds_y2026m01d31 PARTITION OF candles_seconds FOR VALUES FROM ('2026-01-31T00:00:00') TO ('2026-02-01T00:00:00');
+
+CREATE TABLE candles_minutes (
+    market VARCHAR(30) NOT NULL,
+    candle_date_time_utc VARCHAR(20) NOT NULL,
+    candle_date_time_kst VARCHAR(20) NOT NULL,
+    opening_price DOUBLE PRECISION NOT NULL,
+    high_price DOUBLE PRECISION NOT NULL,
+    low_price DOUBLE PRECISION NOT NULL,
+    trade_price DOUBLE PRECISION NOT NULL,
+    timestamp BIGINT NOT NULL,
+    candle_acc_trade_price DOUBLE PRECISION NOT NULL,
+    candle_acc_trade_volume DOUBLE PRECISION NOT NULL,
+    unit INTEGER NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+) PARTITION BY RANGE (candle_date_time_utc);
+
+CREATE TABLE candles_minutes_y2026m01 PARTITION OF candles_minutes FOR VALUES FROM ('2026-01-01T00:00:00') TO ('2026-02-01T00:00:00');
+
+CREATE TABLE candles_days (
+    market VARCHAR(30) NOT NULL,
+    candle_date_time_utc VARCHAR(11) NOT NULL,
+    candle_date_time_kst VARCHAR(11) NOT NULL,
+    opening_price DOUBLE PRECISION NOT NULL,
+    high_price DOUBLE PRECISION NOT NULL,
+    low_price DOUBLE PRECISION NOT NULL,
+    trade_price DOUBLE PRECISION NOT NULL,
+    timestamp BIGINT NOT NULL,
+    candle_acc_trade_price DOUBLE PRECISION NOT NULL,
+    candle_acc_trade_volume DOUBLE PRECISION NOT NULL,
+    prev_closing_price DOUBLE PRECISION NOT NULL,
+    change_price DOUBLE PRECISION NOT NULL,
+    change_rate DOUBLE PRECISION NOT NULL,
+    converted_trade_price DOUBLE PRECISION,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+) PARTITION BY RANGE (candle_date_time_utc);
+
+CREATE TABLE candles_days_y2026m01 PARTITION OF candles_days FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
+
+CREATE TABLE orderbooks (
+    market VARCHAR(30) NOT NULL,
+    timestamp BIGINT NOT NULL,
+    total_ask_size DOUBLE PRECISION NOT NULL,
+    total_bid_size DOUBLE PRECISION NOT NULL,
+    orderbook_units JSONB NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX idx_orderbooks_market ON orderbooks(market);
+CREATE INDEX idx_orderbooks_timestamp ON orderbooks(timestamp);
