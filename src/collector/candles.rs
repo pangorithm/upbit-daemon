@@ -17,7 +17,7 @@ enum ApiRequestDto {
         market: String,
         count: u32,
         to: String,
-        unit: u32,
+        unit: String,
     },
     CandlesDays {
         market: String,
@@ -35,30 +35,34 @@ fn get_global_queue() -> ApiQueue {
         .clone()
 }
 
-fn candle_table_for_unit(unit: u32) -> &'static str {
-    match unit {
-        1 => "candles_seconds",
-        _ => "candles_minutes",
+fn candle_table_for_unit(unit: &str) -> &'static str {
+    if crate::api::quotation::candle::is_seconds_unit(unit) {
+        "candles_seconds"
+    } else if crate::api::quotation::candle::is_days_unit(unit) {
+        "candles_days"
+    } else {
+        "candles_minutes"
     }
 }
 
-fn candle_table_for_days() -> &'static str {
-    "candles_days"
-}
-
-pub async fn fill_candle_gap(
+pub async fn fill_candle_minutes_gap(
     pool: &PgPool,
     rest: &crate::api::rest::RestClient,
     config: &Config,
     market: &str,
-    unit: u32,
+    unit: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let last_candle_time = get_last_candle_time(pool, market, unit).await?;
-    if last_candle_time.is_none() {
-        info!(market, unit, "No last candle found, skipping gap-filling (new subscription)");
-        return Ok(());
-    }
-    let last_candle_time = last_candle_time.unwrap();
+    let last_candle_time = match last_candle_time {
+        Some(t) => t,
+        None => {
+            info!(
+                market,
+                unit, "No last candle found, skipping gap-filling (new subscription)"
+            );
+            return Ok(());
+        }
+    };
 
     let gap_minutes = calculate_gap_minutes(Some(&last_candle_time))?;
     if gap_minutes == 0 {
@@ -66,13 +70,16 @@ pub async fn fill_candle_gap(
         return Ok(());
     }
 
+    let api_unit = crate::api::quotation::candle::unit_to_api_value(unit);
+    let numeric_unit: u32 = api_unit.parse().unwrap_or(1);
+
     info!(
         market,
         gap_minutes, unit, "Adding gap-filling to global queue"
     );
 
     let queue = get_global_queue();
-    let total_candles_needed = gap_minutes / unit;
+    let total_candles_needed = gap_minutes / numeric_unit;
     let mut remaining_candles = total_candles_needed;
 
     let mut current_from = last_candle_time
@@ -82,7 +89,7 @@ pub async fn fill_candle_gap(
     while remaining_candles > 0 {
         let batch_size = std::cmp::min(remaining_candles, config.candle.count);
         let to_str = current_from
-            .checked_add_signed(Duration::minutes((batch_size * unit) as i64))
+            .checked_add_signed(Duration::minutes((batch_size * numeric_unit) as i64))
             .expect("Time overflow")
             .format("%Y-%m-%dT%H:%M:%S+00:00")
             .to_string();
@@ -90,10 +97,10 @@ pub async fn fill_candle_gap(
             market: market.to_string(),
             count: batch_size,
             to: to_str,
-            unit,
+            unit: unit.to_string(),
         });
         current_from = current_from
-            .checked_add_signed(Duration::minutes((batch_size * unit) as i64))
+            .checked_add_signed(Duration::minutes((batch_size * numeric_unit) as i64))
             .expect("Time overflow");
         remaining_candles -= batch_size;
     }
@@ -111,14 +118,24 @@ pub async fn fill_candle_days_gap(
     market: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let last_candle_date = get_last_candle_days_time(pool, market).await?;
-    if last_candle_date.is_none() {
-        info!(market, "No last candle found for days, skipping gap-filling (new subscription)");
-        return Ok(());
-    }
-    let last_candle_date = last_candle_date.unwrap();
+    let last_candle_date = match last_candle_date {
+        Some(t) => t,
+        None => {
+            info!(
+                market,
+                "No last candle found for days, skipping gap-filling (new subscription)"
+            );
+            return Ok(());
+        }
+    };
 
     let last_time = chrono::NaiveDateTime::parse_from_str(&last_candle_date, "%Y-%m-%dT%H:%M:%S")
-        .map_err(|e| format!("Failed to parse last candle time '{}': {}", last_candle_date, e))?;
+        .map_err(|e| {
+        format!(
+            "Failed to parse last candle time '{}': {}",
+            last_candle_date, e
+        )
+    })?;
     let now = chrono::Utc::now().naive_utc();
     let diff_days = (now - last_time).num_days();
 
@@ -127,7 +144,10 @@ pub async fn fill_candle_days_gap(
         return Ok(());
     }
 
-    info!(market, diff_days, "Adding daily candle gap-filling to global queue");
+    info!(
+        market,
+        diff_days, "Adding daily candle gap-filling to global queue"
+    );
 
     let queue = get_global_queue();
     let to_str = chrono::Utc::now()
@@ -160,13 +180,16 @@ pub async fn fill_all_candle_gaps(
         .collect();
 
     for market in &markets {
-        for &unit in &config.candle.units {
-            if let Err(e) = fill_candle_gap(pool, rest, config, market, unit).await {
-                error!(market, unit, error = %e, "Failed to fill candle gap");
+        for unit in &config.candle.units {
+            if crate::api::quotation::candle::is_days_unit(unit) {
+                if let Err(e) = fill_candle_days_gap(pool, rest, config, market).await {
+                    error!(market, unit, error = %e, "Failed to fill candles days gap");
+                }
+            } else {
+                if let Err(e) = fill_candle_minutes_gap(pool, rest, config, market, unit).await {
+                    error!(market, unit, error = %e, "Failed to fill candle gap");
+                }
             }
-        }
-        if let Err(e) = fill_candle_days_gap(pool, rest, config, market).await {
-            error!(market, error = %e, "Failed to fill candle days gap");
         }
     }
 
@@ -209,14 +232,14 @@ fn start_background_task(
                                 match candle::get_candles_minutes(
                                     &rest_client,
                                     &market,
-                                    unit,
+                                    &unit,
                                     count,
                                     &to,
                                 )
                                 .await
                                 {
                                     Ok(candles) => {
-                                        if let Err(e) = insert_candles(&pool, &candles).await {
+                                        if let Err(e) = insert_candles(&pool, &candles, &unit).await {
                                             error!(
                                                 api_type = "CandlesMinutes",
                                                 market,
@@ -255,7 +278,7 @@ fn start_background_task(
                                 .await
                                 {
                                     Ok(candles) => {
-                                        if let Err(e) = insert_candles_days(&pool, &candles).await {
+                                        if let Err(e) = insert_candles(&pool, &candles, "1d").await {
                                             error!(
                                                 api_type = "CandlesDays",
                                                 market,
@@ -295,31 +318,33 @@ fn start_background_task(
 async fn get_last_candle_time(
     pool: &PgPool,
     market: &str,
-    unit: u32,
+    unit: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     let table = candle_table_for_unit(unit);
     let query = match table {
-        "candles_seconds" => {
-            r#"SELECT candle_date_time_utc FROM candles_seconds WHERE market = $1 ORDER BY candle_date_time_utc DESC LIMIT 1"#
+        "candles_days" => {
+            r#"SELECT candle_date_time_utc FROM candles_days WHERE market = $1 ORDER BY candle_date_time_utc DESC LIMIT 1"#
         }
         _ => {
             r#"SELECT candle_date_time_utc FROM candles_minutes WHERE market = $1 AND unit = $2 ORDER BY candle_date_time_utc DESC LIMIT 1"#
         }
     };
 
-    if table == "candles_seconds" {
-        sqlx::query(query)
+    match table {
+        "candles_days" => sqlx::query(query)
             .bind(market)
             .fetch_optional(pool)
             .await
-            .map(|row| row.map(|r: sqlx::postgres::PgRow| r.get("candle_date_time_utc")))
-    } else {
-        sqlx::query(query)
-            .bind(market)
-            .bind(unit as i32)
-            .fetch_optional(pool)
-            .await
-            .map(|row| row.map(|r: sqlx::postgres::PgRow| r.get("candle_date_time_utc")))
+            .map(|row| row.map(|r: sqlx::postgres::PgRow| r.get("candle_date_time_utc"))),
+        _ => {
+            let api_unit = crate::api::quotation::candle::unit_to_api_value(unit);
+            sqlx::query(query)
+                .bind(market)
+                .bind(api_unit.parse::<i32>().unwrap_or(10))
+                .fetch_optional(pool)
+                .await
+                .map(|row| row.map(|r: sqlx::postgres::PgRow| r.get("candle_date_time_utc")))
+        }
     }
 }
 
@@ -359,7 +384,10 @@ fn calculate_gap_minutes(
 async fn insert_candles(
     pool: &PgPool,
     candles: &[Value],
+    unit: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let table = candle_table_for_unit(unit);
+
     for candle in candles {
         let market = candle["market"].as_str().unwrap_or("");
         let candle_date_time_utc = candle["candle_date_time_utc"].as_str().unwrap_or("");
@@ -370,19 +398,23 @@ async fn insert_candles(
         let trade_price = candle["trade_price"].as_f64().unwrap_or(0.0);
         let candle_acc_trade_price = candle["candle_acc_trade_price"].as_f64().unwrap_or(0.0);
         let candle_acc_trade_volume = candle["candle_acc_trade_volume"].as_f64().unwrap_or(0.0);
-        let unit = candle["unit"].as_u64().unwrap_or(0) as u32;
-        let table = candle_table_for_unit(unit);
 
         match table {
-            "candles_seconds" => {
+            "candles_days" => {
                 let timestamp = candle["timestamp"].as_i64().unwrap_or(0);
+                let prev_closing_price = candle["prev_closing_price"].as_f64();
+                let change_price = candle["change_price"].as_f64();
+                let change_rate = candle["change_rate"].as_f64();
+                let converted_trade_price = candle["converted_trade_price"].as_f64();
+
                 sqlx::query(
                     r#"
-                    INSERT INTO candles_seconds (
+                    INSERT INTO candles_days (
                         market, candle_date_time_utc, candle_date_time_kst,
                         opening_price, high_price, low_price, trade_price,
-                        timestamp, candle_acc_trade_price, candle_acc_trade_volume
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                        timestamp, candle_acc_trade_price, candle_acc_trade_volume,
+                        prev_closing_price, change_price, change_rate, converted_trade_price
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                     ON CONFLICT (market, candle_date_time_utc) DO UPDATE SET
                         candle_date_time_kst = EXCLUDED.candle_date_time_kst,
                         opening_price = EXCLUDED.opening_price,
@@ -391,12 +423,16 @@ async fn insert_candles(
                         trade_price = EXCLUDED.trade_price,
                         timestamp = EXCLUDED.timestamp,
                         candle_acc_trade_price = EXCLUDED.candle_acc_trade_price,
-                        candle_acc_trade_volume = EXCLUDED.candle_acc_trade_volume
+                        candle_acc_trade_volume = EXCLUDED.candle_acc_trade_volume,
+                        prev_closing_price = EXCLUDED.prev_closing_price,
+                        change_price = EXCLUDED.change_price,
+                        change_rate = EXCLUDED.change_rate,
+                        converted_trade_price = EXCLUDED.converted_trade_price
                     "#,
                 )
                 .bind(market)
-                .bind(candle_date_time_utc)
-                .bind(candle_date_time_kst)
+                .bind(&candle_date_time_utc)
+                .bind(&candle_date_time_kst)
                 .bind(opening_price)
                 .bind(high_price)
                 .bind(low_price)
@@ -404,6 +440,10 @@ async fn insert_candles(
                 .bind(timestamp)
                 .bind(candle_acc_trade_price)
                 .bind(candle_acc_trade_volume)
+                .bind(prev_closing_price)
+                .bind(change_price)
+                .bind(change_rate)
+                .bind(converted_trade_price)
                 .execute(pool)
                 .await
                 .map_err(|e| {
@@ -411,13 +451,13 @@ async fn insert_candles(
                         table,
                         error = e.to_string(),
                         market,
-                        "Failed to insert candle to candles_seconds"
+                        "Failed to insert candle to candles_days"
                     );
                     e
                 })?;
             }
             _ => {
-                let unit = candle["unit"].as_u64().unwrap_or(0) as i64;
+                let unit_val = candle["unit"].as_u64().unwrap_or(0) as i64;
                 sqlx::query(
                     r#"
                     INSERT INTO candles_minutes (
@@ -445,7 +485,7 @@ async fn insert_candles(
                 .bind(trade_price)
                 .bind(candle_acc_trade_price)
                 .bind(candle_acc_trade_volume)
-                .bind(unit)
+                .bind(unit_val)
                 .execute(pool)
                 .await
                 .map_err(|e| {
@@ -459,79 +499,6 @@ async fn insert_candles(
                 })?;
             }
         }
-    }
-
-    Ok(())
-}
-
-async fn insert_candles_days(
-    pool: &PgPool,
-    candles: &[Value],
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    for candle in candles {
-        let market = candle["market"].as_str().unwrap_or("");
-        let candle_date_time_utc = format!("{}T00:00:00", candle["candle_date_time_utc"].as_str().unwrap_or(""));
-        let candle_date_time_kst = format!("{}T00:00:00", candle["candle_date_time_kst"].as_str().unwrap_or(""));
-        let opening_price = candle["opening_price"].as_f64().unwrap_or(0.0);
-        let high_price = candle["high_price"].as_f64().unwrap_or(0.0);
-        let low_price = candle["low_price"].as_f64().unwrap_or(0.0);
-        let trade_price = candle["trade_price"].as_f64().unwrap_or(0.0);
-        let candle_acc_trade_price = candle["candle_acc_trade_price"].as_f64().unwrap_or(0.0);
-        let candle_acc_trade_volume = candle["candle_acc_trade_volume"].as_f64().unwrap_or(0.0);
-        let timestamp = candle["timestamp"].as_i64().unwrap_or(0);
-        let prev_closing_price = candle["prev_closing_price"].as_f64();
-        let change_price = candle["change_price"].as_f64();
-        let change_rate = candle["change_rate"].as_f64();
-        let converted_trade_price = candle["converted_trade_price"].as_f64();
-
-        sqlx::query(
-            r#"
-            INSERT INTO candles_days (
-                market, candle_date_time_utc, candle_date_time_kst,
-                opening_price, high_price, low_price, trade_price,
-                timestamp, candle_acc_trade_price, candle_acc_trade_volume,
-                prev_closing_price, change_price, change_rate, converted_trade_price
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-            ON CONFLICT (market, candle_date_time_utc) DO UPDATE SET
-                candle_date_time_kst = EXCLUDED.candle_date_time_kst,
-                opening_price = EXCLUDED.opening_price,
-                high_price = EXCLUDED.high_price,
-                low_price = EXCLUDED.low_price,
-                trade_price = EXCLUDED.trade_price,
-                timestamp = EXCLUDED.timestamp,
-                candle_acc_trade_price = EXCLUDED.candle_acc_trade_price,
-                candle_acc_trade_volume = EXCLUDED.candle_acc_trade_volume,
-                prev_closing_price = EXCLUDED.prev_closing_price,
-                change_price = EXCLUDED.change_price,
-                change_rate = EXCLUDED.change_rate,
-                converted_trade_price = EXCLUDED.converted_trade_price
-            "#,
-        )
-        .bind(market)
-        .bind(&candle_date_time_utc)
-        .bind(&candle_date_time_kst)
-        .bind(opening_price)
-        .bind(high_price)
-        .bind(low_price)
-        .bind(trade_price)
-        .bind(timestamp)
-        .bind(candle_acc_trade_price)
-        .bind(candle_acc_trade_volume)
-        .bind(prev_closing_price)
-        .bind(change_price)
-        .bind(change_rate)
-        .bind(converted_trade_price)
-        .execute(pool)
-        .await
-        .map_err(|e| {
-            error!(
-                table = "candles_days",
-                error = e.to_string(),
-                market,
-                "Failed to insert daily candle"
-            );
-            e
-        })?;
     }
 
     Ok(())

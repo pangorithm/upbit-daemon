@@ -13,8 +13,7 @@ pub async fn create_future_partitions(pool: &PgPool, config: &Config) -> Result<
     create_daily_string_partitions(pool, "tickers", &today_date, n).await;
     // trades: VARCHAR(10) → 'YYYY-MM-DD'
     create_daily_iso_partitions(pool, "trades", &today_date, n).await;
-
-    // candles_seconds: TIMESTAMP WITH TIME ZONE 파티션 키 → ISO 형식
+    // candles_seconds: VARCHAR(20) → 'YYYY-MM-DDTHH:MM:SS'
     create_daily_ts_partitions(pool, "candles_seconds", &today_date, n).await;
 
     // 월별 파티션

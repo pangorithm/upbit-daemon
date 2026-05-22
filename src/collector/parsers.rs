@@ -20,23 +20,40 @@ pub async fn handle_message(
 }
 
 /// Extract candle unit from type field (e.g. "candle.10m" → 10)
-fn parse_candle_unit(type_field: &str) -> u32 {
-    if let Some(unit_str) = type_field.strip_prefix("candle.") {
-        if let Some(min_str) = unit_str.strip_suffix('m') {
-            if let Ok(unit) = min_str.parse::<u32>() {
-                return unit;
-            }
+fn parse_candle_type(type_field: &str) -> &str {
+    match type_field {
+        "candle.1s" => "s",
+        "candle.1m" => "m",
+        "candle.3m" => "m",
+        "candle.5m" => "m",
+        "candle.10m" => "m",
+        "candle.15m" => "m",
+        "candle.30m" => "m",
+        "candle.60m" => "m",
+        "candle.240m" => "m",
+        _ => "m",
+    }
+}
+
+fn candle_table_for_suffix(suffix: &str) -> &'static str {
+    match suffix {
+        "s" => "candles_seconds",
+        "d" => "candles_days",
+        _ => "candles_minutes",
+    }
+}
+
+fn extract_numeric_unit(type_field: &str) -> i32 {
+    if let Some(rest) = type_field.strip_prefix("candle.") {
+        let num_str = rest
+            .strip_suffix('s')
+            .or_else(|| rest.strip_suffix('m'))
+            .unwrap_or(rest);
+        if let Ok(n) = num_str.parse::<i32>() {
+            return n;
         }
     }
     10
-}
-
-fn candle_table_for_unit(unit: u32) -> &'static str {
-    if unit == 1 {
-        "candles_seconds"
-    } else {
-        "candles_minutes"
-    }
 }
 
 async fn handle_candle_msg(
@@ -52,8 +69,9 @@ async fn handle_candle_msg(
     let trade_price = msg["trade_price"].as_f64().unwrap_or(0.0);
     let candle_acc_trade_price = msg["candle_acc_trade_price"].as_f64().unwrap_or(0.0);
     let candle_acc_trade_volume = msg["candle_acc_trade_volume"].as_f64().unwrap_or(0.0);
-    let unit = parse_candle_unit(msg["type"].as_str().unwrap_or("candle.10m"));
-    let table = candle_table_for_unit(unit);
+    let suffix = parse_candle_type(msg["type"].as_str().unwrap_or("candle.10m"));
+    let table = candle_table_for_suffix(suffix);
+    let numeric_unit = extract_numeric_unit(msg["type"].as_str().unwrap_or("candle.10m"));
 
     let query = match table {
         "candles_seconds" => {
@@ -71,6 +89,28 @@ async fn handle_candle_msg(
                 timestamp = EXCLUDED.timestamp,
                 candle_acc_trade_price = EXCLUDED.candle_acc_trade_price,
                 candle_acc_trade_volume = EXCLUDED.candle_acc_trade_volume
+            "#
+        }
+        "candles_days" => {
+            r#"
+            INSERT INTO candles_days (market, candle_date_time_utc, candle_date_time_kst,
+                opening_price, high_price, low_price, trade_price,
+                timestamp, candle_acc_trade_price, candle_acc_trade_volume,
+                prev_closing_price, change_price, change_rate, converted_trade_price)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            ON CONFLICT (market, candle_date_time_utc) DO UPDATE SET
+                candle_date_time_kst = EXCLUDED.candle_date_time_kst,
+                opening_price = EXCLUDED.opening_price,
+                high_price = EXCLUDED.high_price,
+                low_price = EXCLUDED.low_price,
+                trade_price = EXCLUDED.trade_price,
+                timestamp = EXCLUDED.timestamp,
+                candle_acc_trade_price = EXCLUDED.candle_acc_trade_price,
+                candle_acc_trade_volume = EXCLUDED.candle_acc_trade_volume,
+                prev_closing_price = EXCLUDED.prev_closing_price,
+                change_price = EXCLUDED.change_price,
+                change_rate = EXCLUDED.change_rate,
+                converted_trade_price = EXCLUDED.converted_trade_price
             "#
         }
         _ => {
@@ -93,7 +133,7 @@ async fn handle_candle_msg(
     };
 
     let _rows_affected = match table {
-        _ if table == "candles_seconds" => {
+        "candles_seconds" => {
             let timestamp = msg["timestamp"].as_i64().unwrap_or(0);
             sqlx::query(query)
                 .bind(market)
@@ -109,6 +149,30 @@ async fn handle_candle_msg(
                 .execute(pool)
                 .await
         }
+        "candles_days" => {
+            let timestamp = msg["timestamp"].as_i64().unwrap_or(0);
+            let prev_closing_price = msg["prev_closing_price"].as_f64();
+            let change_price = msg["change_price"].as_f64();
+            let change_rate = msg["change_rate"].as_f64();
+            let converted_trade_price = msg["converted_trade_price"].as_f64();
+            sqlx::query(query)
+                .bind(market)
+                .bind(candle_date_time_utc)
+                .bind(candle_date_time_kst)
+                .bind(opening_price)
+                .bind(high_price)
+                .bind(low_price)
+                .bind(trade_price)
+                .bind(timestamp)
+                .bind(candle_acc_trade_price)
+                .bind(candle_acc_trade_volume)
+                .bind(prev_closing_price)
+                .bind(change_price)
+                .bind(change_rate)
+                .bind(converted_trade_price)
+                .execute(pool)
+                .await
+        }
         _ => {
             sqlx::query(query)
                 .bind(market)
@@ -120,7 +184,7 @@ async fn handle_candle_msg(
                 .bind(trade_price)
                 .bind(candle_acc_trade_price)
                 .bind(candle_acc_trade_volume)
-                .bind(unit as i32)
+                .bind(numeric_unit)
                 .execute(pool)
                 .await
         }
@@ -134,7 +198,7 @@ async fn handle_candle_msg(
         table = table,
         market = market,
         utc = candle_date_time_utc,
-        unit,
+        numeric_unit,
         "Candle upserted"
     );
     Ok(())

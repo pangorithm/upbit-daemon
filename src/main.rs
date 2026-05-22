@@ -48,7 +48,7 @@ async fn run_ws_session(
     let pool_clone = ws_pool.clone();
     let config_clone = ws_config.clone();
     tokio::spawn(async move {
-        let mut timer = interval(std::time::Duration::from_secs(30));
+        let mut timer = interval(std::time::Duration::from_secs(10 * 60));
         loop {
             timer.tick().await;
             if let Err(e) = refresh_candle_subscriptions(&pool_clone, &ws_clone, &config_clone).await {

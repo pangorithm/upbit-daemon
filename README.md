@@ -38,7 +38,7 @@ upbit-daemon/
 │   │   ├── auth.rs          # JWT 생성 (REST + WebSocket)
 │   │   ├── quotation/
 │   │   │   ├── mod.rs
-│   │   │   ├── candle.rs    # 시세 조회 - 분 캔들 REST
+│   │   │   ├── candle.rs    # 시세 조회 - 초/분/일 캔들 REST
 │   │   │   └── market.rs    # 페어 목록 조회 REST
 │   │   ├── rest.rs          # REST API 호출 (reqwest, JWT bearer)
 │   │   └── websocket.rs     # WebSocket 연결/송수신
@@ -49,7 +49,7 @@ upbit-daemon/
 │   │   └── subscriptions.rs # WebSocket 구독 메시지 생성
 │   └── cron/
 │       ├── mod.rs                 # 모듈 export
-│       ├── market_refresh.rs      # 페어 목록 갱신 (1h cron)
+│       ├── market_refresh.rs      # 페어 목록 갱신 (10분 cron)
 │       ├── partition_schedule.rs  # 파티션 생성/삭제 스케줄러
 │       └── partition_delete.rs    # 과거 파티션 삭제
 └── docs/                    # 업비트 API 문서
@@ -73,8 +73,10 @@ url:
   rest: https://api.upbit.com
   ws: wss://api.upbit.com/websocket/v1
 candle:
-  units: [1, 10, 60]     # 구독할 캔들 시간 단위 (분)
-  count: 200             # REST 캔들 조회 시 count 파라미터 (최대 200)
+  units: [1m, 10m, 60m, 1d]  # 구독할 캔들 시간 단위 (1m, 10m, 60m, 1d)
+  count: 200                  # REST 캔들 조회 시 count 파라미터 (최대 200)
+  seconds:
+    markets: [KRW-BTC]       # 1s 캔들 구독할 페어 (빈 배열 = 구독 안 함, gap-filling 없음)
 rate_limit:
   api_calls_per_second: 5
 partition:
@@ -138,7 +140,7 @@ DB 컬럼명은 REST API 응답 필드명을 기준으로 매핑합니다. WebSo
 ### 4. 파티션 gap-filling
 - 각 파티션 테이블에서 마지막 생성된 파티션 확인
 - 마지막 파티션부터 현재 시점까지 누락된 파티션 테이블 자동 생성
-  - `candles_seconds`, `trades`, `tickers`: 일 단위 파티션 (누락된 일자 생성)
+  - `trades`, `tickers`, `candles_seconds`: 일 단위 파티션 (누락된 일자 생성)
   - `candles_minutes`, `candles_days`: 월 단위 파티션 (누락된 월 생성)
 
 ### 5. 미래 파티션 생성
@@ -160,16 +162,19 @@ DB 컬럼명은 REST API 응답 필드명을 기준으로 매핑합니다. WebSo
   - 신규 페어 추가 / 기존 페어 정보 업데이트
 
 ### 8. 캔들 구독 관리
-- `config.yaml`의 `candle_units` 배열에 지정된 시간 단위 (예: `[1, 10, 60]`) 의 캔들을 WebSocket으로 구독
-- 프로그램 시작 시 `markets` 테이블에서 페어 목록 조회 후, 해당 페어들의 `candle_units` 단위 캔들을 WebSocket 구독
+- `config.yaml`의 `candle.units` 배열에 지정된 시간 단위 (예: `[1m, 10m, 60m, 1d]`) 의 캔들을 WebSocket으로 구독
+- `1s` 캔들은 `config.yaml`의 `candle.seconds.markets`에 명시된 페어만 구독 (전체 markets 아님)
+- 프로그램 시작 시 `markets` 테이블에서 페어 목록 조회 후, 해당 페어들의 `candle.units` 단위 캔들을 WebSocket 구독
 - 구독 중인 스트림 목록은 WebSocket `LIST_SUBSCRIPTIONS` 메서드로 조회 가능
-- `LIST_SUBSCRIPTIONS` 응답과 `markets` 테이블 페어 목록을 비교하여 신규 페어 자동 구독 추가
-- **Cron으로 1시간 1회** 실행하여 `markets` 테이블 변경사항 확인 및 구독 갱신
+- `LIST_SUBSCRIPTIONS` 응답과 `markets` 테이블 페어 목록을 비교하여 신규 페어 자동 구독 추가 (1s 단위 제외)
+- **10분 1회** 실행하여 `markets` 테이블 변경사항 확인 및 구독 갱신
 
 ### 9. 캔들 gap-filling (구독 시작 시)
-- config.yaml의 `candle_units` 단위 캔들 각각에 대해 구독 시작 전 gap-filling 수행
+- config.yaml의 `candle.units` 단위 캔들 각각에 대해 구독 시작 전 gap-filling 수행
 - 해당 페어의 마지막 캔들 시간과 현재 시간 비교
 - 누락된 캔들 확인 시 REST API (`/v1/candles/minutes/{unit}`) 로 조회 (`batch_size` 개수만큼)
+- `1d` 단위 캔들은 `/v1/candles/days` 로 조회
+- `1s` 캔들은 gap-filling 하지 않음 (WebSocket 실시간 수신만)
 - 마지막 캔들이 없으면 gap-filling 하지 않음 (새 구독)
 - REST API 응답 데이터를 DB에 `UPSERT`
 
@@ -178,6 +183,8 @@ DB 컬럼명은 REST API 응답 필드명을 기준으로 매핑합니다. WebSo
 - `INSERT ... ON CONFLICT DO UPDATE` 방식으로 중복 방지
 - REST API로 수집된 데이터도 동일하게 upsert
 - WebSocket 필드명 (`code`) → REST 필드명 (`market`) 매핑하여 DB 컬럼에 저장
+- 캔들 데이터는 suffix 기반 테이블 라우팅: `m` → `candles_minutes`, `d` → `candles_days`
+  - `1s` 캔들은 `candle.seconds.markets`에 명시된 페어만 구독, REST gap-filling 없이 WebSocket 수신만 저장
 
 ## 실행
 

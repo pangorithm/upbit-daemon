@@ -11,7 +11,6 @@ pub enum PartitionGranularity {
 /// Configuration for a partition table: name, key column, and granularity
 pub struct PartitionConfig {
     pub table_name: &'static str,
-    pub partition_key: &'static str,
     pub granularity: PartitionGranularity,
 }
 
@@ -19,27 +18,22 @@ pub struct PartitionConfig {
 pub const PARTITION_CONFIGS: &[PartitionConfig] = &[
     PartitionConfig {
         table_name: "tickers",
-        partition_key: "trade_date",
         granularity: PartitionGranularity::Daily,
     },
     PartitionConfig {
         table_name: "trades",
-        partition_key: "trade_date_utc",
         granularity: PartitionGranularity::Daily,
     },
     PartitionConfig {
         table_name: "candles_seconds",
-        partition_key: "candle_date_time_utc",
         granularity: PartitionGranularity::Daily,
     },
     PartitionConfig {
         table_name: "candles_minutes",
-        partition_key: "candle_date_time_utc",
         granularity: PartitionGranularity::Monthly,
     },
     PartitionConfig {
         table_name: "candles_days",
-        partition_key: "candle_date_time_utc",
         granularity: PartitionGranularity::Monthly,
     },
 ];

@@ -2,8 +2,10 @@ url:
   rest: https://api.upbit.com
   ws: wss://api.upbit.com/websocket/v1
 candle:
-  units: [1, 10, 60]
+  units: [1m, 10m, 60m, 1d]
   count: 200
+  seconds:
+    markets: []
 rate_limit:
   api_calls_per_second: 5
 partition:

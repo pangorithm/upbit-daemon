@@ -19,18 +19,41 @@ pub async fn subscribe_markets(
         return Ok(());
     }
 
-    for &unit in &config.candle.units {
+    // Subscribe to minute/day candles from all markets
+    for unit in &config.candle.units {
+        let api_unit = crate::api::quotation::candle::unit_to_api_value(unit);
+        let ws_type = if crate::api::quotation::candle::is_days_unit(unit) {
+            "candle.240m"
+        } else {
+            format!("candle.{}m", api_unit).leak()
+        };
         let candle_msg = json!([
             {"ticket": uuid::Uuid::new_v4().to_string()},
-            {"type": format!("candle.{}", unit), "codes": markets.clone()},
+            {"type": ws_type, "codes": markets.clone()},
             {"format": "DEFAULT"}
         ]);
         if let Err(e) = ws.send(
             tokio_tungstenite::tungstenite::Message::Text(candle_msg.to_string().into())
         ).await {
-            error!("Failed to subscribe to candle.{} for {} markets: {}", unit, markets.len(), e);
+            error!("Failed to subscribe to {} for {} markets: {}", ws_type, markets.len(), e);
         } else {
-            info!("Subscribed to {} markets for candle.{} units", markets.len(), unit);
+            info!("Subscribed to {} markets for {} units", markets.len(), ws_type);
+        }
+    }
+
+    // Subscribe to 1s candles from explicitly listed markets only
+    for market in &config.candle.seconds.markets {
+        let candle_msg = json!([
+            {"ticket": uuid::Uuid::new_v4().to_string()},
+            {"type": "candle.1s", "codes": [market.as_str()]},
+            {"format": "DEFAULT"}
+        ]);
+        if let Err(e) = ws.send(
+            tokio_tungstenite::tungstenite::Message::Text(candle_msg.to_string().into())
+        ).await {
+            error!("Failed to subscribe to candle.1s for market {}: {}", market, e);
+        } else {
+            info!("Subscribed to market {} for candle.1s unit", market);
         }
     }
 
@@ -44,18 +67,24 @@ pub async fn subscribe_new_market(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Dynamically subscribing to new market: {} with units {:?}", market, config.candle.units);
 
-    for &unit in &config.candle.units {
+    for unit in &config.candle.units {
+        let api_unit = crate::api::quotation::candle::unit_to_api_value(unit);
+        let ws_type = if crate::api::quotation::candle::is_days_unit(unit) {
+            "candle.240m"
+        } else {
+            format!("candle.{}m", api_unit).leak()
+        };
         let candle_msg = json!([
             {"ticket": uuid::Uuid::new_v4().to_string()},
-            {"type": format!("candle.{}", unit), "codes": [market]},
+            {"type": ws_type, "codes": [market]},
             {"format": "DEFAULT"}
         ]);
         if let Err(e) = ws.send(
             tokio_tungstenite::tungstenite::Message::Text(candle_msg.to_string().into())
         ).await {
-            error!("Failed to subscribe to candle.{} for market {}: {}", unit, market, e);
+            error!("Failed to subscribe to {} for market {}: {}", ws_type, market, e);
         } else {
-            info!("Subscribed to market {} for candle.{} unit", market, unit);
+            info!("Subscribed to market {} for {} unit", market, ws_type);
         }
     }
 

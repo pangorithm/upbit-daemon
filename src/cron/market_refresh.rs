@@ -5,9 +5,9 @@ use crate::config::Config;
 use crate::api::rest::RestClient;
 
 pub async fn run_market_refresh(pool: &PgPool, rest: &RestClient, config: &Config) {
-    info!("Starting market refresh cron (1h interval)");
+    info!("Starting market refresh cron (10min interval)");
 
-    let interval = interval(std::time::Duration::from_secs(60 * 60));
+    let interval = interval(std::time::Duration::from_secs(10 * 60));
     tokio::pin!(interval);
 
     loop {

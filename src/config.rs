@@ -28,6 +28,7 @@ pub struct Cli {
 pub struct Config {
     pub url: UrlConfig,
     pub candle: CandleConfig,
+
     pub rate_limit: RateLimitConfig,
     pub partition: PartitionConfig,
 }
@@ -41,15 +42,28 @@ pub struct UrlConfig {
     pub ws: String,
 }
 
+/// Second-level candle settings: explicit market list for subscription
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct CandleSecondsConfig {
+    /// Markets to subscribe for 1s candles (empty = don't subscribe)
+    #[serde(default)]
+    pub markets: Vec<String>,
+}
+
 /// Candle subscription settings: time units and batch count
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct CandleConfig {
-    /// Candle time units to subscribe (minutes): e.g. [1, 10, 60]
+    /// Candle time units to subscribe: e.g. [1m, 10m, 60m, 1d]
+    /// 1s is handled separately via seconds.markets
+    /// Suffix determines target table: m → candles_minutes, d → candles_days
     #[serde(default = "default_candle_units")]
-    pub units: Vec<u32>,
+    pub units: Vec<String>,
     /// Number of candles per REST API request (max 200)
     #[serde(default = "default_count")]
     pub count: u32,
+    /// Second-level candle configuration
+    #[serde(default)]
+    pub seconds: CandleSecondsConfig,
 }
 
 /// Rate limiting settings
@@ -76,7 +90,7 @@ pub struct PartitionConfig {
 
 fn default_rest_url() -> String { "https://api.upbit.com".to_string() }
 fn default_ws_url() -> String { "wss://api.upbit.com/websocket/v1".to_string() }
-fn default_candle_units() -> Vec<u32> { vec![1, 10, 60] }
+fn default_candle_units() -> Vec<String> { vec!["1m".to_string(), "10m".to_string(), "60m".to_string()] }
 fn default_count() -> u32 { 200 }
 fn default_api_calls_per_second() -> usize { 5 }
 fn default_retain_days() -> u32 { 30 }
