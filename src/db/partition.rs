@@ -21,13 +21,6 @@ pub async fn create_future_partitions(pool: &PgPool, config: &Config) -> Result<
         let future = NaiveDate::from_ymd_opt(today_date.year(), today_date.month() + i as u32, 1).unwrap();
         let next_month = future + Months::new(1);
 
-        let name = format!("candles_days_y{:04}m{:02}", future.year(), future.month());
-        let sql = format!(
-            "CREATE TABLE IF NOT EXISTS {} PARTITION OF candles_days FOR VALUES FROM ('{}') TO ('{}')",
-            name, future.format("%Y-%m-%d"), next_month.format("%Y-%m-%d")
-        );
-        create_partition(pool, "candles_days", &sql).await;
-
         let name = format!("candles_minutes_y{:04}m{:02}", future.year(), future.month());
         let sql = format!(
             "CREATE TABLE IF NOT EXISTS {} PARTITION OF candles_minutes FOR VALUES FROM ('{}') TO ('{}')",
@@ -36,6 +29,13 @@ pub async fn create_future_partitions(pool: &PgPool, config: &Config) -> Result<
             next_month.format("%Y-%m-%dT%H:%M:%S")
         );
         create_partition(pool, "candles_minutes", &sql).await;
+
+        let name = format!("candles_days_y{:04}m{:02}", future.year(), future.month());
+        let sql = format!(
+            "CREATE TABLE IF NOT EXISTS {} PARTITION OF candles_days FOR VALUES FROM ('{}') TO ('{}')",
+            name, future.format("%Y-%m-%d"), next_month.format("%Y-%m-%d")
+        );
+        create_partition(pool, "candles_days", &sql).await;
     }
 
     info!("Future partitions created");

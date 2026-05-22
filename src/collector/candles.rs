@@ -47,7 +47,11 @@ pub async fn fill_candle_gap(
     unit: u32,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let last_candle_time = get_last_candle_time(pool, market, unit).await?;
-    let last_candle_time = last_candle_time.ok_or("No last candle found")?;
+    if last_candle_time.is_none() {
+        info!(market, unit, "No last candle found, skipping gap-filling (new subscription)");
+        return Ok(());
+    }
+    let last_candle_time = last_candle_time.unwrap();
 
     let gap_minutes = calculate_gap_minutes(Some(&last_candle_time))?;
     if gap_minutes == 0 {

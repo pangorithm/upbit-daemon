@@ -7,7 +7,10 @@ mod error;
 
 use clap::Parser;
 use sqlx::Row;
+use std::collections::HashSet;
+use std::sync::OnceLock;
 use tokio::sync::mpsc;
+use tokio::time::interval;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 
@@ -40,6 +43,19 @@ async fn run_ws_session(
     if let Err(e) = collector::candles::fill_all_candle_gaps(&ws_pool, &rest, &ws_config).await {
         error!("Gap-filling failed: {}", e);
     }
+
+    let ws_clone = ws.clone();
+    let pool_clone = ws_pool.clone();
+    let config_clone = ws_config.clone();
+    tokio::spawn(async move {
+        let mut timer = interval(std::time::Duration::from_secs(30));
+        loop {
+            timer.tick().await;
+            if let Err(e) = refresh_candle_subscriptions(&pool_clone, &ws_clone, &config_clone).await {
+                error!("Subscription refresh failed: {}", e);
+            }
+        }
+    });
 
     let (keepalive_tx, mut keepalive_rx) = mpsc::channel::<()>(1);
     let keepalive_handle = ws.keepalive(keepalive_tx.clone());
@@ -94,6 +110,54 @@ async fn run_ws_session(
 
     drop(keepalive_tx);
     let _ = keepalive_handle.await;
+}
+
+async fn refresh_candle_subscriptions(
+    pool: &sqlx::PgPool,
+    ws: &api::websocket::WebSocketClient,
+    config: &config::Config,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    static SUBSCRIBED: OnceLock<std::sync::Mutex<HashSet<String>>> = OnceLock::new();
+    let subscribed = SUBSCRIBED.get_or_init(|| std::sync::Mutex::new(HashSet::new()));
+
+    let db_markets_rows = sqlx::query(
+        r#"SELECT market FROM markets ORDER BY market"#
+    ).fetch_all(pool).await?;
+    let db_markets: Vec<String> = db_markets_rows.iter()
+        .map(|r: &sqlx::postgres::PgRow| r.get("market"))
+        .collect();
+
+    if db_markets.is_empty() {
+        return Ok(());
+    }
+
+    let new_markets: Vec<String> = {
+        let lock = subscribed.lock().unwrap();
+        db_markets.iter()
+            .filter(|m| !lock.contains(m.as_str()))
+            .cloned()
+            .collect()
+    };
+
+    if new_markets.is_empty() {
+        return Ok(());
+    }
+
+    for market in &new_markets {
+        if let Err(e) = collector::subscriptions::subscribe_new_market(ws, config, market).await {
+            error!("Failed to subscribe new market {}: {}", market, e);
+        }
+    }
+
+    {
+        let mut lock = subscribed.lock().unwrap();
+        for market in &new_markets {
+            lock.insert(market.clone());
+        }
+    }
+
+    info!("Subscribed to {} new markets", new_markets.len());
+    Ok(())
 }
 
 async fn handle_subscription_update(

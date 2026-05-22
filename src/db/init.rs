@@ -37,6 +37,11 @@ pub const PARTITION_CONFIGS: &[PartitionConfig] = &[
         partition_key: "candle_date_time_utc",
         granularity: PartitionGranularity::Monthly,
     },
+    PartitionConfig {
+        table_name: "candles_days",
+        partition_key: "candle_date_time_utc",
+        granularity: PartitionGranularity::Monthly,
+    },
 ];
 
 /// Initialize database: ensure tables exist and fill partition gaps
