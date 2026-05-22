@@ -7,19 +7,21 @@ mod error;
 
 use clap::Parser;
 use sqlx::Row;
-use tracing::{error, info, warn};
+use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
+use tracing::{error, info, warn};
 
 /// Run a single WebSocket session: connect → subscribe → handle messages
 /// Returns on disconnect; caller handles reconnection with backoff
 async fn run_ws_session(
     ws_pool: sqlx::PgPool,
-    ws_config: &config::Config,
+    ws_config: config::Config,
+    rest: crate::api::rest::RestClient,
     access_key: Option<String>,
     secret_key: Option<String>,
     label: &str,
 ) {
-    let mut ws = match api::websocket::WebSocketClient::connect(
+    let ws = match api::websocket::WebSocketClient::connect(
         ws_config.url.ws.clone(), access_key.clone(), secret_key.clone(),
     ).await {
         Ok(client) => client,
@@ -30,59 +32,110 @@ async fn run_ws_session(
     };
     info!("WebSocket connected ({})", label);
 
-    let markets_rows = match sqlx::query(
-        r#"SELECT market FROM markets ORDER BY market"#
-    ).fetch_all(&ws_pool).await {
-        Ok(rows) => rows,
-        Err(e) => {
-            error!("Failed to fetch markets for {}: {}", label, e);
-            return;
-        }
-    };
-    let markets: Vec<String> = markets_rows.iter().map(|r: &sqlx::postgres::PgRow| r.get("market")).collect();
-
-    for &unit in &ws_config.candle.units {
-        let candle_msg = serde_json::json!([
-            {
-                "format": "DEFAULT",
-                "type": format!("candle.{}", unit),
-                "codes": markets.clone()
-            }
-        ]);
-        if let Err(e) = ws.send(Message::Text(candle_msg.to_string().into())).await {
-            error!("Failed to {} candle subscription (unit={}): {}", label, unit, e);
-        } else {
-            info!("{}: subscribed to {} markets for candle.{} units", label, markets.len(), unit);
-        }
+    if let Err(e) = collector::subscriptions::subscribe_markets(&ws_pool, &ws, &ws_config).await {
+        error!("Failed to subscribe markets: {}", e);
+        return;
     }
+
+    if let Err(e) = collector::candles::fill_all_candle_gaps(&ws_pool, &rest, &ws_config).await {
+        error!("Gap-filling failed: {}", e);
+    }
+
+    let (keepalive_tx, mut keepalive_rx) = mpsc::channel::<()>(1);
+    let keepalive_handle = ws.keepalive(keepalive_tx.clone());
 
     loop {
-        match ws.recv().await {
-            Some(Ok(msg)) => match msg {
-                Message::Text(text) => {
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
-                        if let Err(e) = collector::parsers::handle_message(&ws_pool, &parsed).await {
-                            error!("Failed to handle message: {}", e);
+        tokio::select! {
+            biased;
+
+            result = ws.recv() => {
+                match result {
+                    Some(Ok(msg)) => match msg {
+                        Message::Text(text) => {
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
+                                if parsed.as_array().map_or(false, |arr| {
+                                    arr.iter().any(|item| {
+                                        item.get("type").and_then(|t| t.as_str())
+                                            .map_or(false, |t| t == "LIST_SUBSCRIPTIONS")
+                                    })
+                                }) {
+                                    if let Err(e) = handle_subscription_update(&ws_pool, &ws, &ws_config, &parsed).await {
+                                        error!("Failed to handle subscription update: {}", e);
+                                    }
+                                } else if let Err(e) = collector::parsers::handle_message(&ws_pool, &parsed).await {
+                                    error!("Failed to handle message: {}", e);
+                                }
+                            }
                         }
+                        Message::Ping(_) | Message::Pong(_) => continue,
+                        Message::Close(_) => {
+                            warn!("WebSocket closed ({}), will reconnect...", label);
+                            break;
+                        }
+                        _ => continue,
+                    },
+                    Some(Err(e)) => {
+                        error!("WebSocket error ({}): {}", label, e);
+                        break;
+                    }
+                    None => {
+                        warn!("WebSocket stream ended ({}), will reconnect...", label);
+                        break;
                     }
                 }
-                Message::Ping(_) | Message::Pong(_) => continue,
-                Message::Close(_) => {
-                    warn!("WebSocket closed ({}), will reconnect...", label);
-                    return;
-                }
-                _ => continue,
-            },
-            Some(Err(e)) => {
-                error!("WebSocket error ({}): {}", label, e);
-                return;
             }
-            None => {
-                warn!("WebSocket stream ended ({}), will reconnect...", label);
-                return;
+
+            _ = keepalive_rx.recv() => {
+                warn!("Keepalive failed ({}), reconnecting...", label);
+                break;
             }
         }
     }
+
+    drop(keepalive_tx);
+    let _ = keepalive_handle.await;
+}
+
+async fn handle_subscription_update(
+    pool: &sqlx::PgPool,
+    ws: &api::websocket::WebSocketClient,
+    config: &config::Config,
+    msg: &serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let subscribed_codes = msg.as_array().and_then(|arr| {
+        arr.iter().find_map(|item| {
+            item.get("codes").and_then(|codes| codes.as_array())
+                .map(|c| c.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>())
+        })
+    });
+
+    let db_markets_rows = sqlx::query(
+        r#"SELECT market FROM markets ORDER BY market"#
+    ).fetch_all(pool).await?;
+    let db_markets: Vec<String> = db_markets_rows.iter()
+        .map(|r: &sqlx::postgres::PgRow| r.get("market"))
+        .collect();
+
+    let subscribed = match subscribed_codes {
+        Some(codes) => codes.into_iter().collect::<std::collections::HashSet<_>>(),
+        None => std::collections::HashSet::new(),
+    };
+
+    let new_markets: Vec<&str> = db_markets.iter()
+        .filter(|m| !subscribed.contains(m.as_str()))
+        .map(|s| s.as_str())
+        .collect();
+
+    if !new_markets.is_empty() {
+        info!("Found {} new markets, subscribing...", new_markets.len());
+        for market in new_markets {
+            if let Err(e) = collector::subscriptions::subscribe_new_market(ws, config, market).await {
+                error!("Failed to subscribe new market {}: {}", market, e);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Upbit daemon: WebSocket subscription + gap-filling + cron partition management
@@ -115,49 +168,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let access_key = if cli.access_key.is_empty() { None } else { Some(cli.access_key.clone()) };
     let secret_key = if cli.secret_key.is_empty() { None } else { Some(cli.secret_key.clone()) };
 
-    // 1. Database connection
     let pool = db::create_pool(&cli.database_url).await?;
     info!("Database connected");
 
     let rest = api::rest::RestClient::new(&config.url.rest, access_key.clone(), secret_key.clone());
     info!("REST client created");
 
-    // 2. Initialize database: create tables if missing, fill partition gaps
     if let Err(e) = db::init::init_database(&pool).await {
         error!("Database initialization failed: {}", e);
     }
 
-    // 3. Pre-create future partitions (avoid cold starts when cron is down)
     if let Err(e) = db::partition::create_future_partitions(&pool, &config).await {
         error!("Failed to create future partitions: {}", e);
     }
 
-    // 4. Fetch trading pairs from Upbit REST API
     if let Err(e) = api::quotation::market::fetch_and_upsert_markets(&pool, &rest).await {
         error!("Failed to fetch markets: {}", e);
     }
 
-    // 5. WebSocket session: connect → subscribe → handle with auto-reconnect
-    //    On disconnect: retry with exponential backoff (1s→30s max)
-    let ws_pool = pool.clone();
+ let ws_pool = pool.clone();
     let ws_config = config.clone();
+    let ws_rest = rest.clone();
+    let ws_rest_inner = ws_rest.clone();
+    let ws_rest_market = ws_rest.clone();
     let ws_handle = tokio::spawn(async move {
         let mut reconnect_delay_secs: u64 = 1;
         let max_reconnect_delay_secs: u64 = 30;
         loop {
-            run_ws_session(ws_pool.clone(), &ws_config, access_key.clone(), secret_key.clone(), "WS").await;
+            run_ws_session(ws_pool.clone(), ws_config.clone(), ws_rest_inner.clone(),
+                           access_key.clone(), secret_key.clone(), "WS").await;
             tokio::time::sleep(std::time::Duration::from_secs(reconnect_delay_secs)).await;
             reconnect_delay_secs = (reconnect_delay_secs * 2).min(max_reconnect_delay_secs);
         }
     });
 
-    // 6. Partition cron: create future partitions, delete expired partitions (24h cycle)
     let cron_config = config.clone();
-    tokio::spawn(async move {
-        cron::partition_schedule::run_partition_schedule(&pool, &cron_config).await;
+    let cron_pool = pool.clone();
+    let cron_pool_inner = cron_pool.clone();
+    let cron_pool_market = cron_pool.clone();
+    let cron_handle = tokio::spawn(async move {
+        cron::partition_schedule::run_partition_schedule(&cron_pool_inner, &cron_config).await;
     });
 
-    // Wait for shutdown signal (Ctrl+C)
+    let market_config = config.clone();
+    let market_pool = cron_pool_market.clone();
+    let market_rest = ws_rest_market.clone();
+    tokio::spawn(async move {
+        cron::market_refresh::run_market_refresh(&market_pool, &market_rest, &market_config).await;
+    });
+
+    let _ = cron_handle.await;
+
     tokio::signal::ctrl_c().await?;
     info!("Shutdown signal received");
     drop(ws_handle);

@@ -7,13 +7,12 @@ use tracing::{error, info};
 pub async fn handle_message(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let msg_type = msg["type"].as_str().unwrap_or("");
     match msg_type {
-        // Candle WebSocket types: candle.1s, candle.1m, ..., candle.240m
         "candle.1s" | "candle.1m" | "candle.3m" | "candle.5m" | "candle.10m"
         | "candle.15m" | "candle.30m" | "candle.60m" | "candle.240m" => handle_candle_msg(pool, msg).await,
         "trade" => handle_trade_msg(pool, msg).await,
         "ticker" => handle_ticker_msg(pool, msg).await,
         "orderbook" => handle_orderbook_msg(pool, msg).await,
-        _ => Ok(()), // Unknown type - silently ignore
+        _ => Ok(()),
     }
 }
 
@@ -26,11 +25,19 @@ fn parse_candle_unit(type_field: &str) -> u32 {
             }
         }
     }
-    10 // default unit
+    10
 }
 
-/// Handle candle WebSocket message
-/// WebSocket candle response is flat (not nested under "candle" key like REST)
+fn candle_table_for_unit(unit: u32) -> &'static str {
+    if unit == 1 {
+        "candles_seconds"
+    } else if unit >= 60 && unit % 60 == 0 {
+        "candles_days"
+    } else {
+        "candles_minutes"
+    }
+}
+
 async fn handle_candle_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let market = msg["code"].as_str().unwrap_or("");
     let candle_date_time_utc = msg["candle_date_time_utc"].as_str().unwrap_or("");
@@ -42,42 +49,84 @@ async fn handle_candle_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std
     let candle_acc_trade_price = msg["candle_acc_trade_price"].as_f64().unwrap_or(0.0);
     let candle_acc_trade_volume = msg["candle_acc_trade_volume"].as_f64().unwrap_or(0.0);
     let unit = parse_candle_unit(msg["type"].as_str().unwrap_or("candle.10m"));
+    let table = candle_table_for_unit(unit);
 
-    sqlx::query(
-        r#"
-        INSERT INTO candles_minutes (market, candle_date_time_utc, candle_date_time_kst,
-            opening_price, high_price, low_price, trade_price,
-            candle_acc_trade_price, candle_acc_trade_volume, unit)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        ON CONFLICT (market, candle_date_time_utc) DO UPDATE SET
-            candle_date_time_kst = EXCLUDED.candle_date_time_kst,
-            opening_price = EXCLUDED.opening_price,
-            high_price = EXCLUDED.high_price,
-            low_price = EXCLUDED.low_price,
-            trade_price = EXCLUDED.trade_price,
-            candle_acc_trade_price = EXCLUDED.candle_acc_trade_price,
-            candle_acc_trade_volume = EXCLUDED.candle_acc_trade_volume,
-            unit = EXCLUDED.unit
-        "#,
-    )
-    .bind(market)
-    .bind(candle_date_time_utc)
-    .bind(candle_date_time_kst)
-    .bind(opening_price)
-    .bind(high_price)
-    .bind(low_price)
-    .bind(trade_price)
-    .bind(candle_acc_trade_price)
-    .bind(candle_acc_trade_volume)
-    .bind(unit as i32)
-    .execute(pool)
-    .await
-    .map_err(|e| {
-        error!(market = market, error = %e, "Failed to upsert candle");
+    let query = match table {
+        "candles_seconds" => {
+            r#"
+            INSERT INTO candles_seconds (market, candle_date_time_utc, candle_date_time_kst,
+                opening_price, high_price, low_price, trade_price,
+                timestamp, candle_acc_trade_price, candle_acc_trade_volume)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT DO NOTHING
+            "#
+        }
+        "candles_days" => {
+            r#"
+            INSERT INTO candles_days (market, candle_date_time_utc, candle_date_time_kst,
+                opening_price, high_price, low_price, trade_price,
+                timestamp, candle_acc_trade_price, candle_acc_trade_volume,
+                prev_closing_price, change_price, change_rate, converted_trade_price)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            ON CONFLICT DO NOTHING
+            "#
+        }
+        _ => {
+            r#"
+            INSERT INTO candles_minutes (market, candle_date_time_utc, candle_date_time_kst,
+                opening_price, high_price, low_price, trade_price,
+                candle_acc_trade_price, candle_acc_trade_volume, unit)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (market, candle_date_time_utc) DO UPDATE SET
+                candle_date_time_kst = EXCLUDED.candle_date_time_kst,
+                opening_price = EXCLUDED.opening_price,
+                high_price = EXCLUDED.high_price,
+                low_price = EXCLUDED.low_price,
+                trade_price = EXCLUDED.trade_price,
+                candle_acc_trade_price = EXCLUDED.candle_acc_trade_price,
+                candle_acc_trade_volume = EXCLUDED.candle_acc_trade_volume,
+                unit = EXCLUDED.unit
+            "#
+        }
+    };
+
+    let _rows_affected = match table {
+        "candles_days" => {
+            let prev_closing_price = msg["prev_closing_price"].as_f64().unwrap_or(0.0);
+            let change_price = msg["change_price"].as_f64().unwrap_or(0.0);
+            let change_rate = msg["change_rate"].as_f64().unwrap_or(0.0);
+            let converted_trade_price = msg["converted_trade_price"].as_f64();
+            let timestamp = msg["timestamp"].as_i64().unwrap_or(0);
+            sqlx::query(query)
+                .bind(market).bind(candle_date_time_utc).bind(candle_date_time_kst)
+                .bind(opening_price).bind(high_price).bind(low_price).bind(trade_price)
+                .bind(timestamp).bind(candle_acc_trade_price).bind(candle_acc_trade_volume)
+                .bind(prev_closing_price).bind(change_price).bind(change_rate)
+                .bind(converted_trade_price)
+                .execute(pool).await
+        }
+        _ if table == "candles_seconds" => {
+            let timestamp = msg["timestamp"].as_i64().unwrap_or(0);
+            sqlx::query(query)
+                .bind(market).bind(candle_date_time_utc).bind(candle_date_time_kst)
+                .bind(opening_price).bind(high_price).bind(low_price).bind(trade_price)
+                .bind(timestamp).bind(candle_acc_trade_price).bind(candle_acc_trade_volume)
+                .execute(pool).await
+        }
+        _ => {
+            sqlx::query(query)
+                .bind(market).bind(candle_date_time_utc).bind(candle_date_time_kst)
+                .bind(opening_price).bind(high_price).bind(low_price).bind(trade_price)
+                .bind(candle_acc_trade_price).bind(candle_acc_trade_volume)
+                .bind(unit as i32)
+                .execute(pool).await
+        }
+    }.map_err(|e| {
+        error!(table = table, market = market, error = %e, "Failed to upsert candle");
         e
     })?;
 
-    info!(market = market, utc = candle_date_time_utc, unit, "Candle upserted");
+    info!(table = table, market = market, utc = candle_date_time_utc, unit, "Candle upserted");
     Ok(())
 }
 
