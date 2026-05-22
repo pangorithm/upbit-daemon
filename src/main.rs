@@ -186,7 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         error!("Failed to fetch markets: {}", e);
     }
 
- let ws_pool = pool.clone();
+    let ws_pool = pool.clone();
     let ws_config = config.clone();
     let ws_rest = rest.clone();
     let ws_rest_inner = ws_rest.clone();

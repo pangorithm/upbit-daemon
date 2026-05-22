@@ -48,7 +48,8 @@ upbit-daemon/
 │   │   ├── parsers.rs       # WebSocket 메시지 파싱 (candle/ticker/trade/orderbook)
 │   │   └── subscriptions.rs # WebSocket 구독 메시지 생성
 │   └── cron/
-│       ├── mod.rs           # 모듈 export
+│       ├── mod.rs                 # 모듈 export
+│       ├── market_refresh.rs      # 페어 목록 갱신 (1h cron)
 │       ├── partition_schedule.rs  # 파티션 생성/삭제 스케줄러
 │       └── partition_delete.rs    # 과거 파티션 삭제
 └── docs/                    # 업비트 API 문서
