@@ -73,6 +73,7 @@ url:
   rest: https://api.upbit.com
   ws: wss://api.upbit.com/websocket/v1
 candle:
+  market_prefix: "KRW-"       # 수집할 페어 필터링 (예: "KRW-" → KRW 페어만)
   units: [1m, 10m, 60m, 1d]  # REST API gap-filling할 캔들 시간 단위
   count: 200                  # REST 캔들 조회 시 count 파라미터 (최대 200)
   seconds:
@@ -168,7 +169,7 @@ DB 컬럼명은 REST API 응답 필드명을 기준으로 매핑합니다. WebSo
 - 각 페어, 단위별로 마지막 캔들 시간과 현재 시간 비교
 - 누락된 캔들 확인 시 REST API (`/v1/candles/minutes/{unit}` 또는 `/v1/candles/days` for `1d`) 로 조회 (`candle.count` 개수만큼 batch)
 - REST API 응답 데이터를 DB에 `UPSERT` (`INSERT ... ON CONFLICT DO UPDATE`)
-- 마지막 캔들이 없으면 현재 시간 기준으로 `candle.count` 개수만큼 조회
+- 마지막 캔들이 없으면 마지막 캔들 시간을 (현재시간 - 시간단위 * `candle.count`) 으로 가정 후 gap-filling
 
 ### 9. 1s 캔들 WebSocket 구독
 - `config.yaml`의 `candle.seconds.markets`에 명시된 페어만 1s 캔들 WebSocket 구독 (전체 markets 아님)

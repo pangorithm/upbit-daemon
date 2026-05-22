@@ -2,6 +2,7 @@ url:
   rest: https://api.upbit.com
   ws: wss://api.upbit.com/websocket/v1
 candle:
+  market_prefix: "KRW-"
   units: [1m, 10m, 60m, 1d]
   count: 200
   seconds:
@@ -9,6 +10,6 @@ candle:
 rate_limit:
   api_calls_per_second: 5
 partition:
-  retain_days: 30
+  retain_days: 10
   retain_months: 6
   create: 3
