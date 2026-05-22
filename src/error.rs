@@ -30,4 +30,8 @@ pub enum AppError {
     /// Upbit API response error
     #[error("API error: {0}")]
     Api(String),
+
+    /// WebSocket connection already closed
+    #[error("WebSocket connection closed")]
+    ConnectionClosed,
 }

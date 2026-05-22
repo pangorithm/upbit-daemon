@@ -1,5 +1,6 @@
 use super::auth;
 use futures_util::{SinkExt, StreamExt};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, Duration};
@@ -12,23 +13,21 @@ type InnerStream = tokio_tungstenite::WebSocketStream<
     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
 >;
 
-/// WebSocket client for Upbit API.
-/// The inner stream is behind Arc<Mutex<>> so it can be shared
-/// between the message loop and a keepalive task.
 pub struct WebSocketClient {
     stream: Arc<Mutex<InnerStream>>,
+    closed: Arc<AtomicBool>,
 }
 
 impl Clone for WebSocketClient {
     fn clone(&self) -> Self {
         Self {
             stream: Arc::clone(&self.stream),
+            closed: Arc::clone(&self.closed),
         }
     }
 }
 
 impl WebSocketClient {
-    /// Connect to Upbit WebSocket endpoint with JWT auth
     pub async fn connect(
         ws_url: String,
         access_key: Option<String>,
@@ -45,30 +44,40 @@ impl WebSocketClient {
 
         let (stream, _) = connect_async(request).await?;
         info!("WebSocket connected");
-        Ok(Self { stream: Arc::new(Mutex::new(stream)) })
+        Ok(Self {
+            stream: Arc::new(Mutex::new(stream)),
+            closed: Arc::new(AtomicBool::new(false)),
+        })
     }
 
-    /// Send a WebSocket message
     pub async fn send(&self, msg: Message) -> Result<(), crate::error::AppError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(crate::error::AppError::ConnectionClosed);
+        }
         let mut stream = self.stream.lock().await;
         stream.send(msg).await?;
         Ok(())
     }
 
-    /// Receive next WebSocket message (returns None on connection close)
     pub async fn recv(&self) -> Option<Result<Message, crate::error::AppError>> {
         let mut stream = self.stream.lock().await;
-        stream.next().await.map(|r| r.map_err(crate::error::AppError::from))
+        let result = stream.next().await;
+        if result.is_none() {
+            self.closed.store(true, Ordering::Release);
+        }
+        result.map(|r| r.map_err(crate::error::AppError::from))
     }
 
-    /// Start keepalive: send PING every 55s, signal `tx` on failure.
-    /// Returns a JoinHandle; cancel by dropping the sender.
     pub fn keepalive(&self, tx: mpsc::Sender<()>) -> tokio::task::JoinHandle<()> {
         let stream = Arc::clone(&self.stream);
+        let closed = Arc::clone(&self.closed);
         tokio::spawn(async move {
             let mut timer = interval(Duration::from_secs(55));
             loop {
                 timer.tick().await;
+                if closed.load(Ordering::Acquire) {
+                    break;
+                }
                 let mut stream = stream.lock().await;
                 if stream.send(Message::Ping(vec![].into())).await.is_err() {
                     let _ = tx.send(()).await;
