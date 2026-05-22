@@ -220,7 +220,7 @@ collectors:
 
 | 테이블 | 파티션 단위 | 생성 방식 |
 |--------|------------|----------|
-| tickers | 월 | SQL (현재월) + 프로그램 |
+| tickers | 일 | SQL (현재월) + 프로그램 |
 | trades | 월 | SQL (현재월) + 프로그램 |
 | candles_seconds | 일 | SQL (현재월) + 프로그램 |
 | candles_minutes | 월 | SQL (현재월) + 프로그램 |
@@ -229,8 +229,8 @@ collectors:
 
 **프로그램 시작 시:**
 1. 기존 파티션 조회
-2. 월별 테이블: 마지막 파티션 ~ 현재 월 사이 빈 칸 생성 (gap-filling)
-3. 일별 테이블 (candles_seconds): 마지막 파티션 ~ 현재 일 사이 빈 칸 생성 (gap-filling)
+2. 월별 테이블 (trades, candles_minutes, candles_days): 마지막 파티션 ~ 현재 월 사이 빈 칸 생성 (gap-filling)
+3. 일별 테이블 (tickers, candles_seconds): 마지막 파티션 ~ 현재 일 사이 빈 칸 생성 (gap-filling)
 4. 다음 3개월분 월 파티션 생성
 
 **Cron (일일):**
@@ -254,14 +254,15 @@ collectors:
 ### 4. 파티션 gap-filling
 - 각 파티션 테이블에서 마지막 생성된 파티션 확인
 - 마지막 파티션부터 현재 시점까지 누락된 파티션 테이블 자동 생성
-  - `candles_seconds`: 일 단위 (누락된 일자 생성)
-  - `candles_minutes`, `candles_days`, `tickers`, `trades`: 월 단위 (누락된 월 생성)
+  - `candles_seconds`: 일 단위 파티션 (누락된 일자 생성)
+  - `candles_minutes`, `candles_days`, `tickers`, `trades`: 월 단위 파티션 (누락된 월 생성)
 
 ### 5. 미래 파티션 생성 (Cron)
 - 프로그램 시작 시 다음 3개월분 파티션 자동 생성
 - Cron으로 일일 실행하여 미래 파티션 계속 생성 (이미 있으면 skip)
 
 ### 6. 과거 파티션 삭제 (Cron)
+- `tickers` (일 단위): **1개월 이상** 경과된 파티션 삭제
 - `candles_seconds` (일 단위): **1개월 이상** 경과된 파티션 삭제
 - `candles_minutes` (분 단위): **6개월 이상** 경과된 파티션 삭제
 - 저장 공간 관리 및 쿼리 성능 유지
