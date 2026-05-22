@@ -10,6 +10,81 @@ use sqlx::Row;
 use tracing::{error, info, warn};
 use tokio_tungstenite::tungstenite::Message;
 
+/// Run a single WebSocket session: connect → subscribe → handle messages
+/// Returns on disconnect; caller handles reconnection with backoff
+async fn run_ws_session(
+    ws_pool: sqlx::PgPool,
+    ws_config: &config::Config,
+    access_key: Option<String>,
+    secret_key: Option<String>,
+    label: &str,
+) {
+    let mut ws = match api::websocket::WebSocketClient::connect(
+        ws_config.url.ws.clone(), access_key.clone(), secret_key.clone(),
+    ).await {
+        Ok(client) => client,
+        Err(e) => {
+            error!("WebSocket connect failed ({}): {}", label, e);
+            return;
+        }
+    };
+    info!("WebSocket connected ({})", label);
+
+    let markets_rows = match sqlx::query(
+        r#"SELECT market FROM markets ORDER BY market"#
+    ).fetch_all(&ws_pool).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            error!("Failed to fetch markets for {}: {}", label, e);
+            return;
+        }
+    };
+    let markets: Vec<String> = markets_rows.iter().map(|r: &sqlx::postgres::PgRow| r.get("market")).collect();
+
+    for &unit in &ws_config.candle.units {
+        let candle_msg = serde_json::json!([
+            {
+                "format": "DEFAULT",
+                "type": format!("candle.{}", unit),
+                "codes": markets.clone()
+            }
+        ]);
+        if let Err(e) = ws.send(Message::Text(candle_msg.to_string().into())).await {
+            error!("Failed to {} candle subscription (unit={}): {}", label, unit, e);
+        } else {
+            info!("{}: subscribed to {} markets for candle.{} units", label, markets.len(), unit);
+        }
+    }
+
+    loop {
+        match ws.recv().await {
+            Some(Ok(msg)) => match msg {
+                Message::Text(text) => {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
+                        if let Err(e) = collector::parsers::handle_message(&ws_pool, &parsed).await {
+                            error!("Failed to handle message: {}", e);
+                        }
+                    }
+                }
+                Message::Ping(_) | Message::Pong(_) => continue,
+                Message::Close(_) => {
+                    warn!("WebSocket closed ({}), will reconnect...", label);
+                    return;
+                }
+                _ => continue,
+            },
+            Some(Err(e)) => {
+                error!("WebSocket error ({}): {}", label, e);
+                return;
+            }
+            None => {
+                warn!("WebSocket stream ended ({}), will reconnect...", label);
+                return;
+            }
+        }
+    }
+}
+
 /// Upbit daemon: WebSocket subscription + gap-filling + cron partition management
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -62,127 +137,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         error!("Failed to fetch markets: {}", e);
     }
 
-    // 5. WebSocket connection (JWT auth for public endpoint)
-    let mut ws = api::websocket::WebSocketClient::connect(config.url.ws.clone(), access_key.clone(), secret_key.clone()).await?;
-    info!("WebSocket connected");
-
-    // 6. Candle subscription: subscribe all markets for each configured candle unit
-    let markets_rows = sqlx::query(
-        r#"SELECT market FROM markets ORDER BY market"#
-    ).fetch_all(&pool).await?;
-    let markets: Vec<String> = markets_rows.iter().map(|r: &sqlx::postgres::PgRow| r.get("market")).collect();
-
-    if !markets.is_empty() {
-        // Subscribe to all candle units (e.g. 1m, 10m, 60m)
-        for &unit in &config.candle.units {
-            let candle_msg = serde_json::json!([
-                {
-                    "format": "DEFAULT",
-                    "type": format!("candle.{}", unit),
-                    "codes": markets
-                }
-            ]);
-            if let Err(e) = ws.send(Message::Text(candle_msg.to_string().into())).await {
-                error!("Failed to send candle subscription (unit={}): {}", unit, e);
-            } else {
-                info!("Subscribed to {} markets for candle.{} units", markets.len(), unit);
-            }
-        }
-
-        // Gap-fill: for each market + unit, fill missing candles from REST API
-        for market in &markets {
-            for &unit in &config.candle.units {
-                if let Err(e) = collector::candles::fill_candle_gap(&pool, &rest, &config, market, unit).await {
-                    error!(market, unit, "Gap fill failed: {}", e);
-                }
-            }
-        }
-    }
-
-    // 7. WebSocket message handler with reconnection
-    //    On disconnect: reconnect, resubscribe, resume (exponential backoff: 1s→2s→4s→...→max 30s)
+    // 5. WebSocket session: connect → subscribe → handle with auto-reconnect
+    //    On disconnect: retry with exponential backoff (1s→30s max)
     let ws_pool = pool.clone();
     let ws_config = config.clone();
-    let _ws_handle = tokio::spawn(async move {
+    let ws_handle = tokio::spawn(async move {
         let mut reconnect_delay_secs: u64 = 1;
         let max_reconnect_delay_secs: u64 = 30;
         loop {
-            // Connect
-            let mut ws = match api::websocket::WebSocketClient::connect(
-                ws_config.url.ws.clone(), access_key.clone(), secret_key.clone(),
-            ).await {
-                Ok(client) => client,
-                Err(e) => {
-                    error!("WebSocket connect failed (delay={}s): {}", reconnect_delay_secs, e);
-                    tokio::time::sleep(std::time::Duration::from_secs(reconnect_delay_secs)).await;
-                    reconnect_delay_secs = (reconnect_delay_secs * 2).min(max_reconnect_delay_secs);
-                    continue;
-                }
-            };
-            info!("WebSocket connected");
-
-            // Resubscribe all markets for all candle units
-            reconnect_delay_secs = 1; // reset backoff on successful connect
-            let markets_rows = match sqlx::query(
-                r#"SELECT market FROM markets ORDER BY market"#
-            ).fetch_all(&ws_pool).await {
-                Ok(rows) => rows,
-                Err(e) => {
-                    error!("Failed to fetch markets for re-subscription: {}", e);
-                    tokio::time::sleep(std::time::Duration::from_secs(reconnect_delay_secs)).await;
-                    reconnect_delay_secs = (reconnect_delay_secs * 2).min(max_reconnect_delay_secs);
-                    continue;
-                }
-            };
-            let markets: Vec<String> = markets_rows.iter().map(|r: &sqlx::postgres::PgRow| r.get("market")).collect();
-
-            for &unit in &ws_config.candle.units {
-                let candle_msg = serde_json::json!([
-                    {
-                        "format": "DEFAULT",
-                        "type": format!("candle.{}", unit),
-                        "codes": markets.clone()
-                    }
-                ]);
-                if let Err(e) = ws.send(Message::Text(candle_msg.to_string().into())).await {
-                    error!("Failed to resubscribe candle (unit={}): {}", unit, e);
-                } else {
-                    info!("Re-subscribed to {} markets for candle.{} units", markets.len(), unit);
-                }
-            }
-
-            // Handle messages until disconnect
-            loop {
-                match ws.recv().await {
-                    Some(Ok(msg)) => match msg {
-                        Message::Text(text) => {
-                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
-                                if let Err(e) = collector::parsers::handle_message(&ws_pool, &parsed).await {
-                                    error!("Failed to handle message: {}", e);
-                                }
-                            }
-                        }
-                        Message::Ping(_) | Message::Pong(_) => continue,
-                        Message::Close(_) => {
-                            warn!("WebSocket closed, will reconnect...");
-                            break;
-                        }
-                        _ => continue,
-                    },
-                    Some(Err(e)) => {
-                        error!("WebSocket error, will reconnect: {}", e);
-                        break;
-                    }
-                    None => {
-                        warn!("WebSocket stream ended, will reconnect...");
-                        break;
-                    }
-                }
-            }
+            run_ws_session(ws_pool.clone(), &ws_config, access_key.clone(), secret_key.clone(), "WS").await;
+            tokio::time::sleep(std::time::Duration::from_secs(reconnect_delay_secs)).await;
+            reconnect_delay_secs = (reconnect_delay_secs * 2).min(max_reconnect_delay_secs);
         }
     });
 
-    // 8. Partition cron: create future partitions, delete expired partitions (24h cycle)
+    // 6. Partition cron: create future partitions, delete expired partitions (24h cycle)
     let cron_config = config.clone();
     tokio::spawn(async move {
         cron::partition_schedule::run_partition_schedule(&pool, &cron_config).await;
@@ -191,6 +160,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wait for shutdown signal (Ctrl+C)
     tokio::signal::ctrl_c().await?;
     info!("Shutdown signal received");
-    drop(_ws_handle);
+    drop(ws_handle);
     Ok(())
 }
