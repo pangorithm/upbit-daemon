@@ -2,6 +2,7 @@ use clap::Parser;
 use serde::Deserialize;
 use std::path::PathBuf;
 
+/// CLI argument parser
 #[derive(Parser)]
 #[command(name = "upbit-daemon", about = "업비트 API 정보 수집 데몬")]
 pub struct Cli {
@@ -22,6 +23,7 @@ pub struct Cli {
     pub config_path: PathBuf,
 }
 
+/// Top-level config: groups URL, candle, rate_limit, partition settings
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct Config {
     pub url: UrlConfig,
@@ -30,6 +32,7 @@ pub struct Config {
     pub partition: PartitionConfig,
 }
 
+/// Upbit API endpoint URLs
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct UrlConfig {
     #[serde(default = "default_rest_url")]
@@ -38,26 +41,35 @@ pub struct UrlConfig {
     pub ws: String,
 }
 
+/// Candle subscription settings: time units and batch count
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct CandleConfig {
+    /// Candle time units to subscribe (minutes): e.g. [1, 10, 60]
     #[serde(default = "default_candle_units")]
     pub units: Vec<u32>,
+    /// Number of candles per REST API request (max 200)
     #[serde(default = "default_count")]
     pub count: u32,
 }
 
+/// Rate limiting settings
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct RateLimitConfig {
+    /// Max API calls per second
     #[serde(default = "default_api_calls_per_second")]
     pub api_calls_per_second: usize,
 }
 
+/// Partition retention and creation settings
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct PartitionConfig {
+    /// Retain daily partitions for N days
     #[serde(default = "default_retain_days")]
     pub retain_days: u32,
+    /// Retain monthly partitions for N months
     #[serde(default = "default_retain_months")]
     pub retain_months: u32,
+    /// Number of future partitions to pre-create
     #[serde(default = "default_create")]
     pub create: u32,
 }

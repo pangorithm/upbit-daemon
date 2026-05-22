@@ -6,6 +6,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::info;
 
+/// WebSocket client for Upbit API
 pub struct WebSocketClient {
     stream: tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -13,6 +14,8 @@ pub struct WebSocketClient {
 }
 
 impl WebSocketClient {
+    /// Connect to Upbit WebSocket endpoint with JWT auth
+    /// For public (quotation) endpoints, access_key/secret_key can be None
     pub async fn connect(
         ws_url: String,
         access_key: Option<String>,
@@ -32,11 +35,13 @@ impl WebSocketClient {
         Ok(Self { stream })
     }
 
+    /// Send a WebSocket message
     pub async fn send(&mut self, msg: Message) -> Result<(), crate::error::AppError> {
         self.stream.send(msg).await?;
         Ok(())
     }
 
+    /// Receive next WebSocket message (returns None on connection close)
     pub async fn recv(&mut self) -> Option<Result<Message, crate::error::AppError>> {
         self.stream
             .next()
@@ -44,6 +49,8 @@ impl WebSocketClient {
             .map(|r| r.map_err(crate::error::AppError::from))
     }
 
+    /// Keep connection alive by sending WebSocket PING frames every 55 seconds
+    /// Upbit server responds with {"status":"UP"} on PING
     pub async fn keepalive(&mut self) {
         let mut timer = interval(Duration::from_secs(55));
         loop {

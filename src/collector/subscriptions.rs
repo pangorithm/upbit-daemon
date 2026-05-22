@@ -3,6 +3,9 @@ use sqlx::{PgPool, Row};
 use tracing::info;
 use crate::config::Config;
 
+/// Subscribe all markets in DB to candle WebSocket stream
+/// Subscribes using the first unit in config.candle.units[0]
+#[allow(dead_code)]
 pub async fn subscribe_markets(
     pool: &PgPool,
     config: &Config,
@@ -20,7 +23,7 @@ pub async fn subscribe_markets(
 
     info!("Subscribing to {} markets for candle units {:?}", markets.len(), config.candle.units);
 
-    // 첫 번째 candle unit으로 구독 (config.candle.units[0])
+    // Subscribe using first candle unit (config.candle.units[0])
     let candle_msg = json!([
         {
             "format": "DEFAULT",
@@ -34,6 +37,8 @@ pub async fn subscribe_markets(
     Ok(())
 }
 
+/// Subscribe a single new market to candle WebSocket stream
+#[allow(dead_code)]
 pub async fn subscribe_new_market(
     config: &Config,
     market: &str,

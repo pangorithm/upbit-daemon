@@ -6,24 +6,28 @@ use crate::api::rest::RestClient;
 pub async fn fetch_and_upsert_markets(pool: &PgPool, rest: &RestClient) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let resp = rest.get("/v1/markets", &[]).await?;
     let parsed: Value = serde_json::from_str(&resp)?;
-    let markets = parsed["market_group"]["markets"].as_array()
+
+    // /v1/markets returns a flat array
+    let markets: &Vec<Value> = parsed.as_array()
         .ok_or("markets not an array")?;
 
-    info!("Fetched {} markets from Upbit API", markets.len());
+    let filtered: Vec<&Value> = markets.iter()
+        .filter(|m| {
+            let market = m["market"].as_str().unwrap_or("");
+            !market.is_empty() && !market.contains(":") // Exclude derivative markets
+        })
+        .collect();
 
-    for market in markets {
+    info!("Fetched {} markets from Upbit API", filtered.len());
+
+    for market in &filtered {
         let market_code = market["market"].as_str().unwrap_or("");
         let korean_name = market["korean_name"].as_str().unwrap_or("");
         let english_name = market["english_name"].as_str().unwrap_or("");
-        let market_warning = match market["market_warning"].as_str() {
-            Some("WARN") => true,
-            _ => false,
-        };
-        let caution_price = market["market_event_caution_price_fluctuations"].as_bool().unwrap_or(false);
-        let caution_volume = market["market_event_caution_trading_volume_soloing"].as_bool().unwrap_or(false);
-        let caution_deposit = market["market_event_caution_deposit_amount_soloing"].as_bool().unwrap_or(false);
-        let caution_global = market["market_event_caution_global_price_differences"].as_bool().unwrap_or(false);
-        let caution_concentration = market["market_event_caution_concentration_of_small_accounts"].as_bool().unwrap_or(false);
+
+        // Parse nested market_event structure from /v1/market/all response
+        let (market_warning, caution_price, caution_volume, caution_deposit, caution_global, caution_concentration) =
+            parse_market_events(market);
 
         if let Err(e) = upsert_market(pool, market_code, korean_name, english_name,
             market_warning, caution_price, caution_volume, caution_deposit, caution_global, caution_concentration).await {
@@ -33,6 +37,34 @@ pub async fn fetch_and_upsert_markets(pool: &PgPool, rest: &RestClient) -> Resul
 
     info!("Markets upsert completed");
     Ok(())
+}
+
+fn parse_market_events(market: &Value) -> (bool, bool, bool, bool, bool, bool) {
+    // Check both top-level and nested market_event structures
+    if let Some(events) = market.get("market_event") {
+        let warning = events["warning"].as_bool().unwrap_or(false);
+        let caution_obj = events.get("caution").and_then(|c| c.as_object()).cloned();
+        let (price_fluctuations, trading_volume, deposit_amount, global_price, concentration) = match caution_obj {
+            Some(ref c) => (
+                c["PRICE_FLUCTUATIONS"].as_bool().unwrap_or(false),
+                c["TRADING_VOLUME_SOARING"].as_bool().unwrap_or(false),
+                c["DEPOSIT_AMOUNT_SOARING"].as_bool().unwrap_or(false),
+                c["GLOBAL_PRICE_DIFFERENCES"].as_bool().unwrap_or(false),
+                c["CONCENTRATION_OF_SMALL_ACCOUNTS"].as_bool().unwrap_or(false),
+            ),
+            None => (false, false, false, false, false),
+        };
+        return (warning, price_fluctuations, trading_volume, deposit_amount, global_price, concentration);
+    }
+
+    // Legacy flat structure
+    let warning = market["market_warning"].as_str() == Some("WARN");
+    let price_fluctuations = market["market_event_caution_price_fluctuations"].as_bool().unwrap_or(false);
+    let trading_volume = market["market_event_caution_trading_volume_soloing"].as_bool().unwrap_or(false);
+    let deposit_amount = market["market_event_caution_deposit_amount_soloing"].as_bool().unwrap_or(false);
+    let global_price = market["market_event_caution_global_price_differences"].as_bool().unwrap_or(false);
+    let concentration = market["market_event_caution_concentration_of_small_accounts"].as_bool().unwrap_or(false);
+    (warning, price_fluctuations, trading_volume, deposit_amount, global_price, concentration)
 }
 
 async fn upsert_market(

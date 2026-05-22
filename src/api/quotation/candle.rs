@@ -1,17 +1,18 @@
-use reqwest::Client;
+use crate::api::rest::RestClient;
 use serde_json::Value;
 
 pub async fn get_candles_minutes(
-    rest: &Client,
+    rest: &RestClient,
     market: &str,
     unit: u32,
     count: u32,
     to: &str,
-) -> Result<Vec<Value>, reqwest::Error> {
-    let url = format!(
-        "https://api.upbit.com/v1/candles/minutes/{}?market={}&count={}&to={}",
-        unit, market, count, to
-    );
-
-    rest.get(&url).send().await?.json().await
+) -> Result<Vec<Value>, crate::error::AppError> {
+    let query = &[
+        ("market", market),
+        ("count", &count.to_string()),
+        ("to", to),
+    ];
+    let resp = rest.get(&format!("/v1/candles/minutes/{unit}"), query).await?;
+    Ok(serde_json::from_str(&resp)?)
 }

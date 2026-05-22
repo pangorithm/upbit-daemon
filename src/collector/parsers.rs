@@ -2,32 +2,48 @@ use serde_json::Value;
 use sqlx::PgPool;
 use tracing::{error, info};
 
+/// Route WebSocket message to appropriate handler by type
+/// Supported types: candle.{unit}, trade, ticker, orderbook
 pub async fn handle_message(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let msg_type = msg["type"].as_str().unwrap_or("");
     match msg_type {
-        "tick" => handle_candle_tick(pool, msg).await,
+        // Candle WebSocket types: candle.1s, candle.1m, ..., candle.240m
+        "candle.1s" | "candle.1m" | "candle.3m" | "candle.5m" | "candle.10m"
+        | "candle.15m" | "candle.30m" | "candle.60m" | "candle.240m" => handle_candle_msg(pool, msg).await,
         "trade" => handle_trade_msg(pool, msg).await,
         "ticker" => handle_ticker_msg(pool, msg).await,
         "orderbook" => handle_orderbook_msg(pool, msg).await,
-        _ => Ok(()),
+        _ => Ok(()), // Unknown type - silently ignore
     }
 }
 
-async fn handle_candle_tick(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+/// Extract candle unit from type field (e.g. "candle.10m" → 10)
+fn parse_candle_unit(type_field: &str) -> u32 {
+    if let Some(unit_str) = type_field.strip_prefix("candle.") {
+        if let Some(min_str) = unit_str.strip_suffix('m') {
+            if let Ok(unit) = min_str.parse::<u32>() {
+                return unit;
+            }
+        }
+    }
+    10 // default unit
+}
+
+/// Handle candle WebSocket message
+/// WebSocket candle response is flat (not nested under "candle" key like REST)
+async fn handle_candle_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let market = msg["code"].as_str().unwrap_or("");
-    let candle = &msg["candle"];
+    let candle_date_time_utc = msg["candle_date_time_utc"].as_str().unwrap_or("");
+    let candle_date_time_kst = msg["candle_date_time_kst"].as_str().unwrap_or("");
+    let opening_price = msg["opening_price"].as_f64().unwrap_or(0.0);
+    let high_price = msg["high_price"].as_f64().unwrap_or(0.0);
+    let low_price = msg["low_price"].as_f64().unwrap_or(0.0);
+    let trade_price = msg["trade_price"].as_f64().unwrap_or(0.0);
+    let candle_acc_trade_price = msg["candle_acc_trade_price"].as_f64().unwrap_or(0.0);
+    let candle_acc_trade_volume = msg["candle_acc_trade_volume"].as_f64().unwrap_or(0.0);
+    let unit = parse_candle_unit(msg["type"].as_str().unwrap_or("candle.10m"));
 
-    let candle_date_time_utc = candle["candle_date_time_utc"].as_str().unwrap_or("");
-    let candle_date_time_kst = candle["candle_date_time_kst"].as_str().unwrap_or("");
-    let opening_price = candle["opening_price"].as_f64().unwrap_or(0.0);
-    let high_price = candle["high_price"].as_f64().unwrap_or(0.0);
-    let low_price = candle["low_price"].as_f64().unwrap_or(0.0);
-    let trade_price = candle["trade_price"].as_f64().unwrap_or(0.0);
-    let candle_acc_trade_price = candle["candle_acc_trade_price"].as_f64().unwrap_or(0.0);
-    let candle_acc_trade_volume = candle["candle_acc_trade_volume"].as_f64().unwrap_or(0.0);
-    let unit = candle["unit"].as_i64().unwrap_or(1);
-
-    if let Err(e) = sqlx::query(
+    sqlx::query(
         r#"
         INSERT INTO candles_minutes (market, candle_date_time_utc, candle_date_time_kst,
             opening_price, high_price, low_price, trade_price,
@@ -53,28 +69,31 @@ async fn handle_candle_tick(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn st
     .bind(trade_price)
     .bind(candle_acc_trade_price)
     .bind(candle_acc_trade_volume)
-    .bind(unit)
+    .bind(unit as i32)
     .execute(pool)
-    .await {
+    .await
+    .map_err(|e| {
         error!(market = market, error = %e, "Failed to upsert candle");
-    } else {
-        info!(market = market, utc = candle_date_time_utc, "Candle upserted");
-    }
+        e
+    })?;
 
+    info!(market = market, utc = candle_date_time_utc, unit, "Candle upserted");
     Ok(())
 }
 
+/// Handle trade WebSocket message
+/// WebSocket returns trade_date / trade_time (NOT trade_date_utc / trade_time_utc like REST)
 async fn handle_trade_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let market = msg["code"].as_str().unwrap_or("");
     let trade_price = msg["trade_price"].as_f64().unwrap_or(0.0);
     let trade_volume = msg["trade_volume"].as_f64().unwrap_or(0.0);
     let sequential_id = msg["sequential_id"].as_i64().unwrap_or(0);
-     let _trade_timestamp = msg["timestamp"].as_i64().unwrap_or(0);
 
-    let trade_date_utc = msg["trade_date_utc"].as_str().unwrap_or("");
-    let trade_time_utc = msg["trade_time_utc"].as_str().unwrap_or("");
+    // WebSocket field names differ from REST API
+    let trade_date = msg["trade_date"].as_str().unwrap_or("");
+    let trade_time = msg["trade_time"].as_str().unwrap_or("");
 
-    if let Err(e) = sqlx::query(
+    sqlx::query(
         r#"
         INSERT INTO trades (market, trade_date_utc, trade_time_utc, trade_price,
             trade_volume, sequential_id)
@@ -83,26 +102,28 @@ async fn handle_trade_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std:
         "#,
     )
     .bind(market)
-    .bind(trade_date_utc)
-    .bind(trade_time_utc)
+    .bind(trade_date)
+    .bind(trade_time)
     .bind(trade_price)
     .bind(trade_volume)
     .bind(sequential_id)
     .execute(pool)
-    .await {
+    .await
+    .map_err(|e| {
         error!(market = market, error = %e, "Failed to insert trade");
-    }
+        e
+    })?;
 
     Ok(())
 }
 
+/// Handle ticker WebSocket message
+/// WebSocket ticker does NOT provide trade_date_kst / trade_time_kst (only REST does)
 async fn handle_ticker_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let market = msg["code"].as_str().unwrap_or("");
     let trade_date = msg["trade_date"].as_str().unwrap_or("");
     let trade_time = msg["trade_time"].as_str().unwrap_or("");
-    let trade_date_kst = msg["trade_date_kst"].as_str().unwrap_or("");
-    let trade_time_kst = msg["trade_time_kst"].as_str().unwrap_or("");
-    let trade_timestamp = msg["timestamp"].as_i64().unwrap_or(0);
+    let trade_timestamp = msg["trade_timestamp"].as_i64().unwrap_or(0);
     let opening_price = msg["opening_price"].as_f64().unwrap_or(0.0);
     let high_price = msg["high_price"].as_f64().unwrap_or(0.0);
     let low_price = msg["low_price"].as_f64().unwrap_or(0.0);
@@ -121,16 +142,24 @@ async fn handle_ticker_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std
     let highest_52_week_price = msg["highest_52_week_price"].as_f64().unwrap_or(0.0);
     let lowest_52_week_price = msg["lowest_52_week_price"].as_f64().unwrap_or(0.0);
     let timestamp = msg["timestamp"].as_i64().unwrap_or(0);
+    let ask_bid = msg["ask_bid"].as_str().unwrap_or("");
+    let acc_ask_volume = msg["acc_ask_volume"].as_f64().unwrap_or(0.0);
+    let acc_bid_volume = msg["acc_bid_volume"].as_f64().unwrap_or(0.0);
 
-    if let Err(e) = sqlx::query(
+    // WebSocket ticker does NOT provide trade_date_kst / trade_time_kst
+    let trade_date_kst = "";
+    let trade_time_kst = "";
+
+    sqlx::query(
         r#"
         INSERT INTO tickers (market, trade_date, trade_time, trade_date_kst, trade_time_kst,
             trade_timestamp, opening_price, high_price, low_price, trade_price,
             prev_closing_price, change, change_price, change_rate,
             signed_change_price, signed_change_rate, trade_volume,
             acc_trade_price, acc_trade_price_24h, acc_trade_volume,
-            acc_trade_volume_24h, highest_52_week_price, lowest_52_week_price, timestamp)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+            acc_trade_volume_24h, highest_52_week_price, lowest_52_week_price, timestamp,
+            ask_bid, acc_ask_volume, acc_bid_volume)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
         ON CONFLICT (market, trade_date, trade_time) DO UPDATE SET
             trade_date_kst = EXCLUDED.trade_date_kst,
             trade_time_kst = EXCLUDED.trade_time_kst,
@@ -152,7 +181,10 @@ async fn handle_ticker_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std
             acc_trade_volume_24h = EXCLUDED.acc_trade_volume_24h,
             highest_52_week_price = EXCLUDED.highest_52_week_price,
             lowest_52_week_price = EXCLUDED.lowest_52_week_price,
-            timestamp = EXCLUDED.timestamp
+            timestamp = EXCLUDED.timestamp,
+            ask_bid = EXCLUDED.ask_bid,
+            acc_ask_volume = EXCLUDED.acc_ask_volume,
+            acc_bid_volume = EXCLUDED.acc_bid_volume
         "#,
     )
     .bind(market)
@@ -179,14 +211,20 @@ async fn handle_ticker_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std
     .bind(highest_52_week_price)
     .bind(lowest_52_week_price)
     .bind(timestamp)
+    .bind(ask_bid)
+    .bind(acc_ask_volume)
+    .bind(acc_bid_volume)
     .execute(pool)
-    .await {
+    .await
+    .map_err(|e| {
         error!(market = market, error = %e, "Failed to upsert ticker");
-    }
+        e
+    })?;
 
     Ok(())
 }
 
+/// Handle orderbook WebSocket message
 async fn handle_orderbook_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let market = msg["code"].as_str().unwrap_or("");
     let timestamp = msg["timestamp"].as_i64().unwrap_or(0);
@@ -194,7 +232,7 @@ async fn handle_orderbook_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn 
     let total_bid_size = msg["total_bid_size"].as_f64().unwrap_or(0.0);
     let orderbook_units = msg["orderbook_units"].clone();
 
-    if let Err(e) = sqlx::query(
+    sqlx::query(
         r#"
         INSERT INTO orderbooks (market, timestamp, total_ask_size, total_bid_size, orderbook_units)
         VALUES ($1, $2, $3, $4, $5)
@@ -207,9 +245,11 @@ async fn handle_orderbook_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn 
     .bind(total_bid_size)
     .bind(orderbook_units)
     .execute(pool)
-    .await {
+    .await
+    .map_err(|e| {
         error!(market = market, error = %e, "Failed to insert orderbook");
-    }
+        e
+    })?;
 
     Ok(())
 }
