@@ -53,9 +53,12 @@ pub struct CandleSecondsConfig {
 /// Candle subscription settings: time units and batch count
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct CandleConfig {
-    /// Candle time units to subscribe: e.g. [1m, 10m, 60m, 1d]
+    /// Only collect candles for markets whose market code starts with this prefix
+    #[serde(default)]
+    pub market_prefix: Option<String>,
+    /// Candle time units to collect via REST API: e.g. [1m, 10m, 60m, 1d]
     /// 1s is handled separately via seconds.markets
-    /// Suffix determines target table: m → candles_minutes, d → candles_days
+    /// Suffix determines target table: m → candles_minutes, s → candles_seconds, d → candles_days
     #[serde(default = "default_candle_units")]
     pub units: Vec<String>,
     /// Number of candles per REST API request (max 200)

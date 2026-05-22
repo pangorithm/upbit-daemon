@@ -53,60 +53,77 @@ pub async fn fill_candle_minutes_gap(
     unit: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let last_candle_time = get_last_candle_time(pool, market, unit).await?;
-    let last_candle_time = match last_candle_time {
-        Some(t) => t,
-        None => {
-            info!(
-                market,
-                unit, "No last candle found, skipping gap-filling (new subscription)"
-            );
-            return Ok(());
-        }
-    };
-
-    let gap_minutes = calculate_gap_minutes(Some(&last_candle_time))?;
-    if gap_minutes == 0 {
-        info!(market, unit, "No gap in candle data");
-        return Ok(());
-    }
 
     let api_unit = crate::api::quotation::candle::unit_to_api_value(unit);
     let numeric_unit: u32 = api_unit.parse().unwrap_or(1);
 
-    info!(
-        market,
-        gap_minutes, unit, "Adding gap-filling to global queue"
-    );
+    match last_candle_time {
+        Some(last) => {
+            let gap_minutes = calculate_gap_minutes(Some(&last))?;
+            if gap_minutes == 0 {
+                info!(market, unit, "No gap in candle data");
+                return Ok(());
+            }
 
-    let queue = get_global_queue();
-    let total_candles_needed = gap_minutes / numeric_unit;
-    let mut remaining_candles = total_candles_needed;
+            info!(
+                market,
+                gap_minutes, unit, "Adding gap-filling to global queue"
+            );
 
-    let mut current_from = last_candle_time
-        .parse::<chrono::DateTime<chrono::Utc>>()
-        .expect("Failed to parse last_candle_time");
+            let queue = get_global_queue();
+            let total_candles_needed = gap_minutes / numeric_unit;
+            let mut remaining_candles = total_candles_needed;
 
-    while remaining_candles > 0 {
-        let batch_size = std::cmp::min(remaining_candles, config.candle.count);
-        let to_str = current_from
-            .checked_add_signed(Duration::minutes((batch_size * numeric_unit) as i64))
-            .expect("Time overflow")
-            .format("%Y-%m-%dT%H:%M:%S+00:00")
-            .to_string();
-        queue.lock().await.push_back(ApiRequestDto::CandlesMinutes {
-            market: market.to_string(),
-            count: batch_size,
-            to: to_str,
-            unit: unit.to_string(),
-        });
-        current_from = current_from
-            .checked_add_signed(Duration::minutes((batch_size * numeric_unit) as i64))
-            .expect("Time overflow");
-        remaining_candles -= batch_size;
+            let mut current_from = last
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .expect("Failed to parse last_candle_time");
+
+            while remaining_candles > 0 {
+                let batch_size = std::cmp::min(remaining_candles, config.candle.count);
+                let to_str = current_from
+                    .checked_add_signed(Duration::minutes((batch_size * numeric_unit) as i64))
+                    .expect("Time overflow")
+                    .format("%Y-%m-%dT%H:%M:%S+00:00")
+                    .to_string();
+                queue.lock().await.push_back(ApiRequestDto::CandlesMinutes {
+                    market: market.to_string(),
+                    count: batch_size,
+                    to: to_str,
+                    unit: unit.to_string(),
+                });
+                current_from = current_from
+                    .checked_add_signed(Duration::minutes((batch_size * numeric_unit) as i64))
+                    .expect("Time overflow");
+                remaining_candles -= batch_size;
+            }
+
+            start_background_task(queue, pool.clone(), rest.clone(), config.clone());
+            info!(market, unit, "Candle gap filled successfully");
+        }
+        None => {
+            // No last candle: fetch count candles from current time
+            info!(
+                market,
+                unit,
+                count = config.candle.count,
+                "No last candle found, fetching {} candles from current time",
+                config.candle.count
+            );
+            let queue = get_global_queue();
+            let now = chrono::Utc::now();
+            let to_str = now
+                .format("%Y-%m-%dT%H:%M:%S+00:00")
+                .to_string();
+            queue.lock().await.push_back(ApiRequestDto::CandlesMinutes {
+                market: market.to_string(),
+                count: config.candle.count,
+                to: to_str,
+                unit: unit.to_string(),
+            });
+            start_background_task(queue, pool.clone(), rest.clone(), config.clone());
+            info!(market, unit, "Initial candle fetch queued");
+        }
     }
-
-    start_background_task(queue, pool.clone(), rest.clone(), config.clone());
-    info!(market, unit, "Gap filled successfully");
 
     Ok(())
 }
@@ -118,50 +135,66 @@ pub async fn fill_candle_days_gap(
     market: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let last_candle_date = get_last_candle_days_time(pool, market).await?;
-    let last_candle_date = match last_candle_date {
-        Some(t) => t,
-        None => {
+
+    match last_candle_date {
+        Some(last) => {
+            let last_time = chrono::NaiveDateTime::parse_from_str(&last, "%Y-%m-%dT%H:%M:%S")
+                .map_err(|e| {
+                format!(
+                    "Failed to parse last candle time '{}': {}",
+                    last, e
+                )
+            })?;
+            let now = chrono::Utc::now().naive_utc();
+            let diff_days = (now - last_time).num_days();
+
+            if diff_days <= 0 {
+                info!(market, "No gap in daily candle data");
+                return Ok(());
+            }
+
             info!(
                 market,
-                "No last candle found for days, skipping gap-filling (new subscription)"
+                diff_days, "Adding daily candle gap-filling to global queue"
             );
-            return Ok(());
+
+            let queue = get_global_queue();
+            let to_str = chrono::Utc::now()
+                .checked_add_signed(chrono::Duration::days(1))
+                .expect("Time overflow")
+                .format("%Y-%m-%d")
+                .to_string();
+            queue.lock().await.push_back(ApiRequestDto::CandlesDays {
+                market: market.to_string(),
+                to: to_str,
+            });
+
+            start_background_task(queue, pool.clone(), rest.clone(), config.clone());
+            info!(market, "Daily candle gap filled successfully");
         }
-    };
+        None => {
+            // No last candle: fetch count candles from current time
+            info!(
+                market,
+                count = config.candle.count,
+                "No last candle found for days, fetching {} candles from current time",
+                config.candle.count
+            );
+            let queue = get_global_queue();
+            let to_str = chrono::Utc::now()
+                .checked_add_signed(chrono::Duration::days(1))
+                .expect("Time overflow")
+                .format("%Y-%m-%d")
+                .to_string();
+            queue.lock().await.push_back(ApiRequestDto::CandlesDays {
+                market: market.to_string(),
+                to: to_str,
+            });
 
-    let last_time = chrono::NaiveDateTime::parse_from_str(&last_candle_date, "%Y-%m-%dT%H:%M:%S")
-        .map_err(|e| {
-        format!(
-            "Failed to parse last candle time '{}': {}",
-            last_candle_date, e
-        )
-    })?;
-    let now = chrono::Utc::now().naive_utc();
-    let diff_days = (now - last_time).num_days();
-
-    if diff_days <= 0 {
-        info!(market, "No gap in daily candle data");
-        return Ok(());
+            start_background_task(queue, pool.clone(), rest.clone(), config.clone());
+            info!(market, "Initial daily candle fetch queued");
+        }
     }
-
-    info!(
-        market,
-        diff_days, "Adding daily candle gap-filling to global queue"
-    );
-
-    let queue = get_global_queue();
-    let to_str = chrono::Utc::now()
-        .checked_add_signed(chrono::Duration::days(1))
-        .expect("Time overflow")
-        .format("%Y-%m-%d")
-        .to_string();
-    queue.lock().await.push_back(ApiRequestDto::CandlesDays {
-        market: market.to_string(),
-        to: to_str,
-    });
-
-    start_background_task(queue, pool.clone(), rest.clone(), config.clone());
-    info!(market, "Daily candle gap filled successfully");
 
     Ok(())
 }
@@ -174,10 +207,15 @@ pub async fn fill_all_candle_gaps(
     let markets_rows = sqlx::query(r#"SELECT market FROM markets ORDER BY market"#)
         .fetch_all(pool)
         .await?;
-    let markets: Vec<String> = markets_rows
+    let all_markets: Vec<String> = markets_rows
         .iter()
         .map(|r: &sqlx::postgres::PgRow| r.get("market"))
         .collect();
+
+    let markets: Vec<&String> = match &config.candle.market_prefix {
+        Some(prefix) => all_markets.iter().filter(|m| m.starts_with(prefix)).collect(),
+        None => all_markets.iter().collect(),
+    };
 
     for market in &markets {
         for unit in &config.candle.units {
@@ -313,7 +351,7 @@ fn start_background_task(
             }))
         })
         .clone()
-}
+    }
 
 async fn get_last_candle_time(
     pool: &PgPool,
