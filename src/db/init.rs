@@ -121,7 +121,7 @@ async fn get_last_partition(pool: &PgPool, config: &PartitionConfig) -> Result<O
     ).bind(config.table_name)
     .fetch_optional(pool)
     .await
-    .map(|row| row.map(|r: sqlx::postgres::PgRow| r.get("partition_name")))
+    .map(|row| row.map(|r: sqlx::postgres::PgRow| r.get::<String, _>("partition_name").trim().to_string()))
 }
 
 fn format_daily_partition_name(table_name: &str, date: &NaiveDate) -> String {
@@ -163,7 +163,7 @@ fn build_daily_partition_sql(table_name: &str, partition_name: &str, start: &Nai
 fn build_monthly_partition_sql(table_name: &str, partition_name: &str, start: &NaiveDateTime, end: &NaiveDateTime) -> String {
     format!(
         "CREATE TABLE IF NOT EXISTS {} PARTITION OF {} FOR VALUES FROM ('{}') TO ('{}')",
-        partition_name, table_name, start.format("%Y-%m-%dT%H:%M:%S"), end.format("%Y-%m-%dT%H:%M:%S")
+        partition_name, table_name, start.format("%Y-%m-%d"), end.format("%Y-%m-%d")
     )
 }
 
@@ -241,6 +241,7 @@ fn generate_partitions_for_current(config: &PartitionConfig, today: &NaiveDateTi
 
 /// Extract date from daily partition name (e.g. tickers_y2026m01d01 → "2026-01-01")
 fn extract_daily_partition_date(partition_name: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let partition_name = partition_name.trim().replace('\r', "");
     let date_part = partition_name
         .trim_start_matches(|c: char| !c.is_ascii_digit() && c != 'y' && c != 'm' && c != 'd');
     if date_part.len() < 9 {
@@ -254,6 +255,7 @@ fn extract_daily_partition_date(partition_name: &str) -> Result<String, Box<dyn 
 
 /// Extract month start datetime from monthly partition name (e.g. candles_minutes_y2026m01 → 2026-01-01T00:00:00)
 fn extract_monthly_partition_start(partition_name: &str) -> Result<NaiveDateTime, Box<dyn std::error::Error + Send + Sync>> {
+    let partition_name = partition_name.trim().replace('\r', "");
     let date_part = partition_name
         .trim_start_matches(|c: char| !c.is_ascii_digit() && c != 'y' && c != 'm');
     if date_part.len() < 7 {

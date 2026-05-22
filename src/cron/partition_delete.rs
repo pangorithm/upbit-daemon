@@ -69,22 +69,22 @@ async fn get_partitions_to_delete(pool: &PgPool, table_name: &str, cutoff_date: 
 }
 
 fn extract_partition_date(partition_name: &str, table_name: &str) -> Result<chrono::NaiveDate, Box<dyn std::error::Error + Send + Sync>> {
-    let parts: Vec<&str> = partition_name.split('_').collect();
-    if parts.len() < 3 {
-        return Err(format!("Invalid partition name: {}", partition_name).into());
-    }
-    let date_part = parts[2];
+    let date_part = partition_name
+        .split('_')
+        .nth(1)
+        .ok_or_else(|| format!("Invalid partition name: {}", partition_name))?;
 
-    if date_part.starts_with('y') {
-        let year = date_part[1..5].parse::<i32>()?;
-        let month = date_part[5..7].parse::<u32>()?;
-        if table_name == "tickers" || table_name == "trades" || table_name == "candles_seconds" {
-            let day = date_part[7..9].parse::<u32>()?;
-            Ok(chrono::NaiveDate::from_ymd_opt(year, month, day).ok_or("Invalid date")?)
-        } else {
-            Ok(chrono::NaiveDate::from_ymd_opt(year, month, 1).ok_or("Invalid date")?)
-        }
+    if !date_part.starts_with('y') {
+        return Err(format!("Unknown date format in partition: {}", partition_name).into());
+    }
+
+    let year = date_part[1..5].parse::<i32>()?;
+    let month = date_part[5..7].parse::<u32>()?;
+
+    if table_name == "tickers" || table_name == "trades" || table_name == "candles_seconds" {
+        let day = date_part[7..9].parse::<u32>()?;
+        Ok(chrono::NaiveDate::from_ymd_opt(year, month, day).ok_or("Invalid date")?)
     } else {
-        Err(format!("Unknown date format in partition: {}", partition_name).into())
+        Ok(chrono::NaiveDate::from_ymd_opt(year, month, 1).ok_or("Invalid date")?)
     }
 }

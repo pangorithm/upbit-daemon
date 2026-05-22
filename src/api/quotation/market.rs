@@ -8,8 +8,13 @@ pub async fn fetch_and_upsert_markets(pool: &PgPool, rest: &RestClient) -> Resul
     let parsed: Value = serde_json::from_str(&resp)?;
 
     // /v1/markets returns a flat array
-    let markets: &Vec<Value> = parsed.as_array()
-        .ok_or("markets not an array")?;
+    let markets: Vec<Value> = match parsed.as_array() {
+        Some(arr) => arr.clone(),
+        None => {
+            error!("Upbit /v1/markets returned non-array response: {}", resp);
+            return Ok(());
+        }
+    };
 
     let filtered: Vec<&Value> = markets.iter()
         .filter(|m| {

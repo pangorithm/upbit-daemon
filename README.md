@@ -199,6 +199,9 @@ DATABASE_URL=... cargo sqlx migrate run
 # 실행 (config.yaml 기본값: config.yaml)
 cargo run
 
+# 개발모드로 실행하여 .env 사용
+cargo run --features dev
+
 # 커스텀 config.yaml 경로
 cargo run -- --config-path /path/to/config.yaml
 
