@@ -217,7 +217,7 @@ async fn handle_ticker_msg(
 
     sqlx::query(
         r#"
-        INSERT INTO tickers (market, trade_date, trade_time, trade_date_kst, trade_time_kst,
+        INSERT INTO tickers (market, trade_date_utc, trade_time_utc, trade_date_kst, trade_time_kst,
             trade_timestamp, opening_price, high_price, low_price, trade_price,
             prev_closing_price, change, change_price, change_rate,
             signed_change_price, signed_change_rate, trade_volume,
@@ -225,7 +225,7 @@ async fn handle_ticker_msg(
             acc_trade_volume_24h, highest_52_week_price, lowest_52_week_price, timestamp,
             ask_bid, acc_ask_volume, acc_bid_volume)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
-        ON CONFLICT (market, trade_date, trade_time) DO UPDATE SET
+        ON CONFLICT (market, trade_date_utc, trade_time_utc) DO UPDATE SET
             trade_date_kst = EXCLUDED.trade_date_kst,
             trade_time_kst = EXCLUDED.trade_time_kst,
             trade_timestamp = EXCLUDED.trade_timestamp,

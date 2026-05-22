@@ -12,8 +12,8 @@ CREATE TABLE markets (
 
 CREATE TABLE tickers (
     market VARCHAR(30) NOT NULL,
-    trade_date VARCHAR(8) NOT NULL,
-    trade_time VARCHAR(6) NOT NULL,
+    trade_date_utc VARCHAR(8) NOT NULL,
+    trade_time_utc VARCHAR(6) NOT NULL,
     trade_date_kst VARCHAR(8) NOT NULL,
     trade_time_kst VARCHAR(6) NOT NULL,
     trade_timestamp BIGINT NOT NULL,
@@ -38,7 +38,7 @@ CREATE TABLE tickers (
     lowest_52_week_date VARCHAR(10),
     timestamp BIGINT NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-) PARTITION BY RANGE (trade_date);
+) PARTITION BY RANGE (trade_date_utc);
 
 CREATE TABLE tickers_y2026m01d01 PARTITION OF tickers FOR VALUES FROM ('20260101') TO ('20260102');
 
@@ -89,8 +89,8 @@ CREATE TABLE candles_minutes_y2026m01 PARTITION OF candles_minutes FOR VALUES FR
 
 CREATE TABLE candles_days (
     market VARCHAR(30) NOT NULL,
-    candle_date_time_utc VARCHAR(11) NOT NULL,
-    candle_date_time_kst VARCHAR(11) NOT NULL,
+    candle_date_time_utc VARCHAR(20) NOT NULL,
+    candle_date_time_kst VARCHAR(20) NOT NULL,
     opening_price DOUBLE PRECISION NOT NULL,
     high_price DOUBLE PRECISION NOT NULL,
     low_price DOUBLE PRECISION NOT NULL,
@@ -98,12 +98,14 @@ CREATE TABLE candles_days (
     timestamp BIGINT NOT NULL,
     candle_acc_trade_price DOUBLE PRECISION NOT NULL,
     candle_acc_trade_volume DOUBLE PRECISION NOT NULL,
-    prev_closing_price DOUBLE PRECISION NOT NULL,
-    change_price DOUBLE PRECISION NOT NULL,
-    change_rate DOUBLE PRECISION NOT NULL,
+    prev_closing_price DOUBLE PRECISION,
+    change_price DOUBLE PRECISION,
+    change_rate DOUBLE PRECISION,
     converted_trade_price DOUBLE PRECISION,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 ) PARTITION BY RANGE (candle_date_time_utc);
+
+CREATE TABLE candles_days_y2026m01 PARTITION OF candles_days FOR VALUES FROM ('2026-01-01T00:00:00') TO ('2026-02-01T00:00:00');
 
 CREATE TABLE orderbooks (
     market VARCHAR(30) NOT NULL,

@@ -139,16 +139,37 @@ fn format_monthly_partition_name(table_name: &str, year: i32, month: u32) -> Str
 }
 
 fn build_daily_partition_sql(table_name: &str, partition_name: &str, start: &NaiveDateTime, end: &NaiveDateTime) -> String {
-    format!(
-        "CREATE TABLE IF NOT EXISTS {} PARTITION OF {} FOR VALUES FROM ('{}') TO ('{}')",
-        partition_name, table_name, start.format("%Y-%m-%dT%H:%M:%S"), end.format("%Y-%m-%dT%H:%M:%S")
-    )
+    match table_name {
+        "trades" => {
+            // trades: VARCHAR(10) → 'YYYY-MM-DD'
+            format!(
+                "CREATE TABLE IF NOT EXISTS {} PARTITION OF {} FOR VALUES FROM ('{}') TO ('{}')",
+                partition_name, table_name, start.format("%Y-%m-%d"), end.format("%Y-%m-%d")
+            )
+        }
+        "tickers" => {
+            // tickers: VARCHAR(8) → 'YYYYMMDD'
+            format!(
+                "CREATE TABLE IF NOT EXISTS {} PARTITION OF {} FOR VALUES FROM ('{:04}{:02}{:02}') TO ('{:04}{:02}{:02}')",
+                partition_name, table_name,
+                start.year(), start.month(), start.day(),
+                end.year(), end.month(), end.day()
+            )
+        }
+        _ => {
+            // candles_seconds: VARCHAR(20) → 'YYYY-MM-DDTHH:MM:SS'
+            format!(
+                "CREATE TABLE IF NOT EXISTS {} PARTITION OF {} FOR VALUES FROM ('{}') TO ('{}')",
+                partition_name, table_name, start.format("%Y-%m-%dT%H:%M:%S"), end.format("%Y-%m-%dT%H:%M:%S")
+            )
+        }
+    }
 }
 
 fn build_monthly_partition_sql(table_name: &str, partition_name: &str, start: &NaiveDateTime, end: &NaiveDateTime) -> String {
     format!(
         "CREATE TABLE IF NOT EXISTS {} PARTITION OF {} FOR VALUES FROM ('{}') TO ('{}')",
-        partition_name, table_name, start.format("%Y-%m-%d"), end.format("%Y-%m-%d")
+        partition_name, table_name, start.format("%Y-%m-%dT%H:%M:%S"), end.format("%Y-%m-%dT%H:%M:%S")
     )
 }
 
