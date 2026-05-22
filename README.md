@@ -236,6 +236,53 @@ collectors:
 **Cron (일일):**
 1. 다음 3개월분 월 파티션 생성 (이미 있으면 skip)
 
+## 실행 시나리오
+
+### 1. 데몬 프로그램 실행
+- `cargo run` 또는 시스템 서비스로 실행
+- `.env`에서 API 키, DB 연결 정보 로드
+- `config.yaml`에서 수집 설정 (페어 목록, 간격 등) 로드
+
+### 2. 디비 연결
+- `sqlx`를 통해 PostgreSQL 17에 연결 풀 (pool) 생성
+- 연결 실패 시 재시도 후 종료
+
+### 3. 테이블 초기화
+- 프로그램 시작 시 핵심 테이블 (markets, tickers, trades, candles_*, orderbooks) 이 존재하는지 확인
+- 초기화 안 되어 있으면 `migrations/`의 스키마 기반으로 자동 생성
+
+### 4. 파티션 gap-filling
+- 각 파티션 테이블에서 마지막 생성된 파티션 확인
+- 마지막 파티션부터 현재 시점까지 누락된 파티션 테이블 자동 생성
+  - `candles_seconds`: 일 단위 (누락된 일자 생성)
+  - `candles_minutes`, `candles_days`, `tickers`, `trades`: 월 단위 (누락된 월 생성)
+
+### 5. 미래 파티션 생성 (Cron)
+- 프로그램 시작 시 다음 3개월분 파티션 자동 생성
+- Cron으로 일일 실행하여 미래 파티션 계속 생성 (이미 있으면 skip)
+
+### 6. 과거 파티션 삭제 (Cron)
+- `candles_seconds` (일 단위): **1개월 이상** 경과된 파티션 삭제
+- `candles_minutes` (분 단위): **6개월 이상** 경과된 파티션 삭제
+- 저장 공간 관리 및 쿼리 성능 유지
+
+### 7. 페어 목록 조회
+- REST API (`/v1/markets`) 로 업비트 전체 페어 목록 조회
+- **Cron으로 1일 1회** 실행 (실시간 실행도 가능)
+- `markets` 테이블에 `UPSERT` (동시성 처리: `ON CONFLICT DO UPDATE`)
+  - 신규 페어 추가 / 기존 페어 정보 업데이트
+
+### 8. 1분봉 캔들 구독 관리
+- 프로그램 시작 시 `markets` 테이블에서 **구독 중인 페어** 목록 조회
+- 구독 중이지 않은 페어 중 1분봉 캔들이 없는 경우 자동 구독 추가
+- **Cron으로 1일 1회** 실행하여 신규 페어 발견 시 자동 구독
+- WebSocket 스트림에 동적 구독 메시지 전송
+
+### 9. 수신 데이터 DB Upsert
+- WebSocket으로 수신된 모든 데이터 (캔들, 호가, 체결 등)를 실시간으로 DB에 저장
+- `INSERT ... ON CONFLICT DO UPDATE` 방식으로 중복 방지
+- REST API로 수집된 데이터도 동일하게 upsert
+
 ## 실행
 
 ```bash
