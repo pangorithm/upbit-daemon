@@ -62,16 +62,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let markets: Vec<String> = markets_rows.iter().map(|r: &sqlx::postgres::PgRow| r.get("market")).collect();
 
     if !markets.is_empty() {
-        info!("Subscribing to {} markets", markets.len());
-        let ticker_msg = serde_json::json!([
+        info!("Subscribing to {} markets for 1-min candles", markets.len());
+        let candle_msg = serde_json::json!([
             {
-                "format": "SIMPLE",
-                "type": "ticker",
+                "format": "DEFAULT",
+                "type": "tick",
                 "codes": markets
             }
         ]);
-        if let Err(e) = ws.send(Message::Text(ticker_msg.to_string().into())).await {
-            error!("Failed to send ticker subscription: {}", e);
+        if let Err(e) = ws.send(Message::Text(candle_msg.to_string().into())).await {
+            error!("Failed to send candle subscription: {}", e);
         }
     }
 

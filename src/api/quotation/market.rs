@@ -5,11 +5,13 @@ use crate::api::rest::RestClient;
 
 pub async fn fetch_and_upsert_markets(pool: &PgPool, rest: &RestClient) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let resp = rest.get("/v1/markets", &[]).await?;
-    let markets: Vec<Value> = serde_json::from_str(&resp)?;
+    let parsed: Value = serde_json::from_str(&resp)?;
+    let markets = parsed["market_group"]["markets"].as_array()
+        .ok_or("markets not an array")?;
 
     info!("Fetched {} markets from Upbit API", markets.len());
 
-    for market in &markets {
+    for market in markets {
         let market_code = market["market"].as_str().unwrap_or("");
         let korean_name = market["korean_name"].as_str().unwrap_or("");
         let english_name = market["english_name"].as_str().unwrap_or("");

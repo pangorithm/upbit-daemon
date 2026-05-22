@@ -108,7 +108,15 @@ async fn fill_partition_gaps(pool: &PgPool, config: &PartitionConfig) -> Result<
 
 async fn get_last_partition(pool: &PgPool, config: &PartitionConfig) -> Result<Option<String>, sqlx::Error> {
     sqlx::query(
-        r#"SELECT partition_name FROM information_schema.partitions WHERE table_name = $1 ORDER BY partition_name DESC LIMIT 1"#,
+        r#"
+        SELECT c.relname AS partition_name
+        FROM pg_inherits i
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_class p ON p.oid = i.inhparent
+        WHERE p.relname = $1
+        ORDER BY c.relname DESC
+        LIMIT 1
+        "#,
     ).bind(config.table_name)
     .fetch_optional(pool)
     .await
@@ -206,11 +214,11 @@ fn generate_partitions_for_current(config: &PartitionConfig, today: &NaiveDateTi
 }
 
 fn extract_daily_partition_date(partition_name: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let parts: Vec<&str> = partition_name.split('_').collect();
-    if parts.len() < 3 {
+    let date_part = partition_name
+        .trim_start_matches(|c: char| !c.is_ascii_digit() && c != 'y' && c != 'm' && c != 'd');
+    if date_part.len() < 9 {
         return Err(format!("Invalid partition name format: {}", partition_name).into());
     }
-    let date_part = &parts[2];
     let year = &date_part[1..5];
     let month = &date_part[5..7];
     let day = &date_part[7..9];
@@ -218,11 +226,11 @@ fn extract_daily_partition_date(partition_name: &str) -> Result<String, Box<dyn 
 }
 
 fn extract_monthly_partition_start(partition_name: &str) -> Result<NaiveDateTime, Box<dyn std::error::Error + Send + Sync>> {
-    let parts: Vec<&str> = partition_name.split('_').collect();
-    if parts.len() < 3 {
+    let date_part = partition_name
+        .trim_start_matches(|c: char| !c.is_ascii_digit() && c != 'y' && c != 'm');
+    if date_part.len() < 7 {
         return Err(format!("Invalid partition name format: {}", partition_name).into());
     }
-    let date_part = &parts[2];
     let year = date_part[1..5].parse::<i32>()?;
     let month = date_part[5..7].parse::<u32>()?;
     let day = NaiveDate::from_ymd_opt(year, month, 1)

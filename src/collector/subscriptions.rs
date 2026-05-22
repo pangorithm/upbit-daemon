@@ -18,26 +18,13 @@ pub async fn subscribe_markets(
         return Ok(());
     }
 
-    info!("Subscribing to {} markets", markets.len());
-
-    let ticker_msg = json!([
-        {
-            "format": "SIMPLE",
-            "type": "ticker",
-            "codes": markets
-        }
-    ]);
-
-    send(&ticker_msg.to_string()).await;
+    info!("Subscribing to {} markets for candle tick", markets.len());
 
     let candle_msg = json!([
         {
-            "code": "KRW-BTC",
-            "name": "candle",
-            "tickerSymbol": {
-                "market": "KRW-BTC",
-                "tickerIntervalType": "minutes10"
-            }
+            "format": "DEFAULT",
+            "type": "tick",
+            "codes": markets
         }
     ]);
 
@@ -53,15 +40,15 @@ pub async fn subscribe_new_market(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Dynamically subscribing to new market: {}", market);
 
-    let ticker_msg = json!([
+    let candle_msg = json!([
         {
-            "format": "SIMPLE",
-            "type": "ticker",
+            "format": "DEFAULT",
+            "type": "tick",
             "codes": [market]
         }
     ]);
 
-    send(&ticker_msg.to_string()).await;
+    send(&candle_msg.to_string()).await;
 
     Ok(())
 }

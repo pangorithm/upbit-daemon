@@ -1,0 +1,8 @@
+rest_url: https://api.upbit.com
+ws_url: wss://api.upbit.com/websocket/v1
+candle_unit: 10
+batch_size: 200
+api_calls_per_second: 5
+partition_retain_days: 30
+partition_retain_months: 6
+partition_create: 3
