@@ -1,0 +1,7 @@
+# Env
+.env
+
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock
