@@ -4,11 +4,14 @@ use tracing::{error, info};
 
 /// Route WebSocket message to appropriate handler by type
 /// Supported types: candle.{unit}, trade, ticker, orderbook
-pub async fn handle_message(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn handle_message(
+    pool: &PgPool,
+    msg: &Value,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let msg_type = msg["type"].as_str().unwrap_or("");
     match msg_type {
-        "candle.1s" | "candle.1m" | "candle.3m" | "candle.5m" | "candle.10m"
-        | "candle.15m" | "candle.30m" | "candle.60m" | "candle.240m" => handle_candle_msg(pool, msg).await,
+        "candle.1s" | "candle.1m" | "candle.3m" | "candle.5m" | "candle.10m" | "candle.15m"
+        | "candle.30m" | "candle.60m" | "candle.240m" => handle_candle_msg(pool, msg).await,
         "trade" => handle_trade_msg(pool, msg).await,
         "ticker" => handle_ticker_msg(pool, msg).await,
         "orderbook" => handle_orderbook_msg(pool, msg).await,
@@ -31,14 +34,15 @@ fn parse_candle_unit(type_field: &str) -> u32 {
 fn candle_table_for_unit(unit: u32) -> &'static str {
     if unit == 1 {
         "candles_seconds"
-    } else if unit >= 60 && unit % 60 == 0 {
-        "candles_days"
     } else {
         "candles_minutes"
     }
 }
 
-async fn handle_candle_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn handle_candle_msg(
+    pool: &PgPool,
+    msg: &Value,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let market = msg["code"].as_str().unwrap_or("");
     let candle_date_time_utc = msg["candle_date_time_utc"].as_str().unwrap_or("");
     let candle_date_time_kst = msg["candle_date_time_kst"].as_str().unwrap_or("");
@@ -58,17 +62,15 @@ async fn handle_candle_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std
                 opening_price, high_price, low_price, trade_price,
                 timestamp, candle_acc_trade_price, candle_acc_trade_volume)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            ON CONFLICT DO NOTHING
-            "#
-        }
-        "candles_days" => {
-            r#"
-            INSERT INTO candles_days (market, candle_date_time_utc, candle_date_time_kst,
-                opening_price, high_price, low_price, trade_price,
-                timestamp, candle_acc_trade_price, candle_acc_trade_volume,
-                prev_closing_price, change_price, change_rate, converted_trade_price)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (market, candle_date_time_utc) DO UPDATE SET
+                candle_date_time_kst = EXCLUDED.candle_date_time_kst,
+                opening_price = EXCLUDED.opening_price,
+                high_price = EXCLUDED.high_price,
+                low_price = EXCLUDED.low_price,
+                trade_price = EXCLUDED.trade_price,
+                timestamp = EXCLUDED.timestamp,
+                candle_acc_trade_price = EXCLUDED.candle_acc_trade_price,
+                candle_acc_trade_volume = EXCLUDED.candle_acc_trade_volume
             "#
         }
         _ => {
@@ -77,7 +79,7 @@ async fn handle_candle_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std
                 opening_price, high_price, low_price, trade_price,
                 candle_acc_trade_price, candle_acc_trade_volume, unit)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            ON CONFLICT (market, candle_date_time_utc) DO UPDATE SET
+            ON CONFLICT (market, candle_date_time_utc, unit) DO UPDATE SET
                 candle_date_time_kst = EXCLUDED.candle_date_time_kst,
                 opening_price = EXCLUDED.opening_price,
                 high_price = EXCLUDED.high_price,
@@ -91,48 +93,59 @@ async fn handle_candle_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std
     };
 
     let _rows_affected = match table {
-        "candles_days" => {
-            let prev_closing_price = msg["prev_closing_price"].as_f64().unwrap_or(0.0);
-            let change_price = msg["change_price"].as_f64().unwrap_or(0.0);
-            let change_rate = msg["change_rate"].as_f64().unwrap_or(0.0);
-            let converted_trade_price = msg["converted_trade_price"].as_f64();
-            let timestamp = msg["timestamp"].as_i64().unwrap_or(0);
-            sqlx::query(query)
-                .bind(market).bind(candle_date_time_utc).bind(candle_date_time_kst)
-                .bind(opening_price).bind(high_price).bind(low_price).bind(trade_price)
-                .bind(timestamp).bind(candle_acc_trade_price).bind(candle_acc_trade_volume)
-                .bind(prev_closing_price).bind(change_price).bind(change_rate)
-                .bind(converted_trade_price)
-                .execute(pool).await
-        }
         _ if table == "candles_seconds" => {
             let timestamp = msg["timestamp"].as_i64().unwrap_or(0);
             sqlx::query(query)
-                .bind(market).bind(candle_date_time_utc).bind(candle_date_time_kst)
-                .bind(opening_price).bind(high_price).bind(low_price).bind(trade_price)
-                .bind(timestamp).bind(candle_acc_trade_price).bind(candle_acc_trade_volume)
-                .execute(pool).await
+                .bind(market)
+                .bind(candle_date_time_utc)
+                .bind(candle_date_time_kst)
+                .bind(opening_price)
+                .bind(high_price)
+                .bind(low_price)
+                .bind(trade_price)
+                .bind(timestamp)
+                .bind(candle_acc_trade_price)
+                .bind(candle_acc_trade_volume)
+                .execute(pool)
+                .await
         }
         _ => {
             sqlx::query(query)
-                .bind(market).bind(candle_date_time_utc).bind(candle_date_time_kst)
-                .bind(opening_price).bind(high_price).bind(low_price).bind(trade_price)
-                .bind(candle_acc_trade_price).bind(candle_acc_trade_volume)
+                .bind(market)
+                .bind(candle_date_time_utc)
+                .bind(candle_date_time_kst)
+                .bind(opening_price)
+                .bind(high_price)
+                .bind(low_price)
+                .bind(trade_price)
+                .bind(candle_acc_trade_price)
+                .bind(candle_acc_trade_volume)
                 .bind(unit as i32)
-                .execute(pool).await
+                .execute(pool)
+                .await
         }
-    }.map_err(|e| {
+    }
+    .map_err(|e| {
         error!(table = table, market = market, error = %e, "Failed to upsert candle");
         e
     })?;
 
-    info!(table = table, market = market, utc = candle_date_time_utc, unit, "Candle upserted");
+    info!(
+        table = table,
+        market = market,
+        utc = candle_date_time_utc,
+        unit,
+        "Candle upserted"
+    );
     Ok(())
 }
 
 /// Handle trade WebSocket message
 /// WebSocket returns trade_date / trade_time (NOT trade_date_utc / trade_time_utc like REST)
-async fn handle_trade_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn handle_trade_msg(
+    pool: &PgPool,
+    msg: &Value,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let market = msg["code"].as_str().unwrap_or("");
     let trade_price = msg["trade_price"].as_f64().unwrap_or(0.0);
     let trade_volume = msg["trade_volume"].as_f64().unwrap_or(0.0);
@@ -168,7 +181,10 @@ async fn handle_trade_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std:
 
 /// Handle ticker WebSocket message
 /// WebSocket ticker does NOT provide trade_date_kst / trade_time_kst (only REST does)
-async fn handle_ticker_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn handle_ticker_msg(
+    pool: &PgPool,
+    msg: &Value,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let market = msg["code"].as_str().unwrap_or("");
     let trade_date = msg["trade_date"].as_str().unwrap_or("");
     let trade_time = msg["trade_time"].as_str().unwrap_or("");
@@ -274,7 +290,10 @@ async fn handle_ticker_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std
 }
 
 /// Handle orderbook WebSocket message
-async fn handle_orderbook_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn handle_orderbook_msg(
+    pool: &PgPool,
+    msg: &Value,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let market = msg["code"].as_str().unwrap_or("");
     let timestamp = msg["timestamp"].as_i64().unwrap_or(0);
     let total_ask_size = msg["total_ask_size"].as_f64().unwrap_or(0.0);

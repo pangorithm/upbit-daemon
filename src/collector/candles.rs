@@ -1,9 +1,9 @@
-use crate::config::Config;
 use crate::api::quotation::candle;
+use crate::config::Config;
 use chrono::Duration;
-use sqlx::Row;
 use serde_json::Value;
 use sqlx::PgPool;
+use sqlx::Row;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -34,8 +34,6 @@ fn get_global_queue() -> ApiQueue {
 fn candle_table_for_unit(unit: u32) -> &'static str {
     if unit == 1 {
         "candles_seconds"
-    } else if unit >= 60 && unit % 60 == 0 {
-        "candles_days"
     } else {
         "candles_minutes"
     }
@@ -57,7 +55,10 @@ pub async fn fill_candle_gap(
         return Ok(());
     }
 
-    info!(market, gap_minutes, unit, "Adding gap-filling to global queue");
+    info!(
+        market,
+        gap_minutes, unit, "Adding gap-filling to global queue"
+    );
 
     let queue = get_global_queue();
     let total_candles_needed = gap_minutes / unit;
@@ -97,10 +98,11 @@ pub async fn fill_all_candle_gaps(
     rest: &crate::api::rest::RestClient,
     config: &Config,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let markets_rows = sqlx::query(
-        r#"SELECT market FROM markets ORDER BY market"#
-    ).fetch_all(pool).await?;
-    let markets: Vec<String> = markets_rows.iter()
+    let markets_rows = sqlx::query(r#"SELECT market FROM markets ORDER BY market"#)
+        .fetch_all(pool)
+        .await?;
+    let markets: Vec<String> = markets_rows
+        .iter()
         .map(|r: &sqlx::postgres::PgRow| r.get("market"))
         .collect();
 
@@ -124,87 +126,94 @@ fn start_background_task(
     use std::sync::{Arc, OnceLock};
     static HANDLE: OnceLock<Arc<JoinHandle<()>>> = OnceLock::new();
 
-    HANDLE.get_or_init(|| {
-        Arc::new(tokio::spawn(async move {
-            let rest_client = rest.clone();
-            let mut timer = interval(std::time::Duration::from_secs_f64(
-                1.0 / config.rate_limit.api_calls_per_second as f64,
-            ));
+    HANDLE
+        .get_or_init(|| {
+            Arc::new(tokio::spawn(async move {
+                let rest_client = rest.clone();
+                let mut timer = interval(std::time::Duration::from_secs_f64(
+                    1.0 / config.rate_limit.api_calls_per_second as f64,
+                ));
 
-            loop {
-                timer.tick().await;
+                loop {
+                    timer.tick().await;
 
-                let batch = {
-                    let mut q = queue.lock().await;
-                    q.pop_front()
-                };
+                    let batch = {
+                        let mut q = queue.lock().await;
+                        q.pop_front()
+                    };
 
-                match batch {
-                    Some(request) => match request {
-                        ApiRequestDto::CandlesMinutes {
-                            market,
-                            count,
-                            to,
-                            unit,
-                        } => {
-                            match candle::get_candles_minutes(
-                                &rest_client, &market, unit, count, &to,
-                            )
-                            .await
-                            {
-                                Ok(candles) => {
-                                    if let Err(e) = insert_candles(&pool, &candles).await {
+                    match batch {
+                        Some(request) => match request {
+                            ApiRequestDto::CandlesMinutes {
+                                market,
+                                count,
+                                to,
+                                unit,
+                            } => {
+                                match candle::get_candles_minutes(
+                                    &rest_client,
+                                    &market,
+                                    unit,
+                                    count,
+                                    &to,
+                                )
+                                .await
+                                {
+                                    Ok(candles) => {
+                                        if let Err(e) = insert_candles(&pool, &candles).await {
+                                            error!(
+                                                api_type = "CandlesMinutes",
+                                                market,
+                                                error = e.to_string(),
+                                                "Failed to insert candles from background task"
+                                            );
+                                        } else {
+                                            info!(
+                                                api_type = "CandlesMinutes",
+                                                market,
+                                                count = candles.len(),
+                                                "Batch fetched and inserted via global queue"
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
                                         error!(
                                             api_type = "CandlesMinutes",
                                             market,
+                                            count,
                                             error = e.to_string(),
-                                            "Failed to insert candles from background task"
-                                        );
-                                    } else {
-                                        info!(
-                                            api_type = "CandlesMinutes",
-                                            market,
-                                            count = candles.len(),
-                                            "Batch fetched and inserted via global queue"
+                                            "Failed to fetch candles"
                                         );
                                     }
                                 }
-                                Err(e) => {
-                                    error!(
-                                        api_type = "CandlesMinutes",
-                                        market,
-                                        count,
-                                        error = e.to_string(),
-                                        "Failed to fetch candles"
-                                    );
-                                }
                             }
+                        },
+                        None => {
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         }
-                    },
-                    None => {
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
                 }
-            }
-        }))
-    }).clone()
+            }))
+        })
+        .clone()
 }
 
-async fn get_last_candle_time(pool: &PgPool, market: &str, unit: u32) -> Result<Option<String>, sqlx::Error> {
+async fn get_last_candle_time(
+    pool: &PgPool,
+    market: &str,
+    unit: u32,
+) -> Result<Option<String>, sqlx::Error> {
     let table = candle_table_for_unit(unit);
     let query = match table {
         "candles_seconds" => {
             r#"SELECT candle_date_time_utc FROM candles_seconds WHERE market = $1 ORDER BY candle_date_time_utc DESC LIMIT 1"#
-        }
-        "candles_days" => {
-            r#"SELECT candle_date_time_utc FROM candles_days WHERE market = $1 ORDER BY candle_date_time_utc DESC LIMIT 1"#
         }
         _ => {
             r#"SELECT candle_date_time_utc FROM candles_minutes WHERE market = $1 AND unit = $2 ORDER BY candle_date_time_utc DESC LIMIT 1"#
         }
     };
 
-    if table == "candles_days" || table == "candles_seconds" {
+    if table == "candles_seconds" {
         sqlx::query(query)
             .bind(market)
             .fetch_optional(pool)
@@ -258,43 +267,6 @@ async fn insert_candles(
         let table = candle_table_for_unit(unit);
 
         match table {
-            "candles_days" => {
-                let prev_closing_price = candle["prev_closing_price"].as_f64().unwrap_or(0.0);
-                let change_price = candle["change_price"].as_f64().unwrap_or(0.0);
-                let change_rate = candle["change_rate"].as_f64().unwrap_or(0.0);
-                let converted_trade_price = candle["converted_trade_price"].as_f64();
-                let timestamp = candle["timestamp"].as_i64().unwrap_or(0);
-                sqlx::query(
-                    r#"
-                    INSERT INTO candles_days (
-                        market, candle_date_time_utc, candle_date_time_kst,
-                        opening_price, high_price, low_price, trade_price,
-                        timestamp, candle_acc_trade_price, candle_acc_trade_volume,
-                        prev_closing_price, change_price, change_rate, converted_trade_price
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-                    ON CONFLICT DO NOTHING
-                    "#,
-                )
-                .bind(market)
-                .bind(candle_date_time_utc)
-                .bind(candle_date_time_kst)
-                .bind(opening_price)
-                .bind(high_price)
-                .bind(low_price)
-                .bind(trade_price)
-                .bind(timestamp)
-                .bind(candle_acc_trade_price)
-                .bind(candle_acc_trade_volume)
-                .bind(prev_closing_price)
-                .bind(change_price)
-                .bind(change_rate)
-                .bind(converted_trade_price)
-                .execute(pool).await
-                .map_err(|e| {
-                    error!(table, error = e.to_string(), market, "Failed to insert candle to candles_days");
-                    e
-                })?;
-            }
             "candles_seconds" => {
                 let timestamp = candle["timestamp"].as_i64().unwrap_or(0);
                 sqlx::query(
@@ -304,7 +276,15 @@ async fn insert_candles(
                         opening_price, high_price, low_price, trade_price,
                         timestamp, candle_acc_trade_price, candle_acc_trade_volume
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                    ON CONFLICT DO NOTHING
+                    ON CONFLICT (market, candle_date_time_utc) DO UPDATE SET
+                        candle_date_time_kst = EXCLUDED.candle_date_time_kst,
+                        opening_price = EXCLUDED.opening_price,
+                        high_price = EXCLUDED.high_price,
+                        low_price = EXCLUDED.low_price,
+                        trade_price = EXCLUDED.trade_price,
+                        timestamp = EXCLUDED.timestamp,
+                        candle_acc_trade_price = EXCLUDED.candle_acc_trade_price,
+                        candle_acc_trade_volume = EXCLUDED.candle_acc_trade_volume
                     "#,
                 )
                 .bind(market)
@@ -317,9 +297,15 @@ async fn insert_candles(
                 .bind(timestamp)
                 .bind(candle_acc_trade_price)
                 .bind(candle_acc_trade_volume)
-                .execute(pool).await
+                .execute(pool)
+                .await
                 .map_err(|e| {
-                    error!(table, error = e.to_string(), market, "Failed to insert candle to candles_seconds");
+                    error!(
+                        table,
+                        error = e.to_string(),
+                        market,
+                        "Failed to insert candle to candles_seconds"
+                    );
                     e
                 })?;
             }
@@ -332,7 +318,7 @@ async fn insert_candles(
                         opening_price, high_price, low_price, trade_price,
                         candle_acc_trade_price, candle_acc_trade_volume, unit
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                    ON CONFLICT (market, candle_date_time_utc) DO UPDATE SET
+                    ON CONFLICT (market, candle_date_time_utc, unit) DO UPDATE SET
                         candle_date_time_kst = EXCLUDED.candle_date_time_kst,
                         opening_price = EXCLUDED.opening_price,
                         high_price = EXCLUDED.high_price,
@@ -353,9 +339,15 @@ async fn insert_candles(
                 .bind(candle_acc_trade_price)
                 .bind(candle_acc_trade_volume)
                 .bind(unit)
-                .execute(pool).await
+                .execute(pool)
+                .await
                 .map_err(|e| {
-                    error!(table, error = e.to_string(), market, "Failed to insert candle to candles_minutes");
+                    error!(
+                        table,
+                        error = e.to_string(),
+                        market,
+                        "Failed to insert candle to candles_minutes"
+                    );
                     e
                 })?;
             }
