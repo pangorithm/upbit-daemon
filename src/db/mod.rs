@@ -1,3 +1,5 @@
+pub mod init;
+
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use tracing::info;
 
