@@ -44,18 +44,6 @@
           └───────────────────┘
 ```
 
-## 데이터 수집 간격
-
-| API | 수집 간격 | 저장 테이블 |
-|-----|----------|------------|
-| tickers (현재가) | 60초 | tickers (월별 파티션) |
-| candles (초) | 1초 | candles_seconds (일 단위 파티션) |
-| candles (분) | 1분 | candles_minutes (월별 파티션) |
-| candles (일) | 1분 | candles_days (월별 파티션) |
-| trades (체결) | 5분 | trades (월별 파티션) |
-| markets (페어) | 1시간 | markets |
-| orderbooks (호가) | WebSocket 실시간 | orderbooks (인덱스) |
-
 ## 프로젝트 구조
 
 ```
@@ -105,15 +93,11 @@ markets:
   - KRW-ETH
   - KRW-XRP
 
-collectors:
-  tickers:
-    interval_seconds: 60
-  candles:
-    interval_seconds: 60
-  trades:
-    interval_seconds: 300
-  markets:
-    interval_minutes: 60
+candle_unit: 10
+batch_size: 200
+api_calls_per_second: 5
+partition_retain_days: 30
+partition_create_months: 3
 ```
 
 ## 데이터 모델 (API 응답 필드 그대로 사용)
@@ -221,7 +205,7 @@ collectors:
 | 테이블 | 파티션 단위 | 생성 방식 |
 |--------|------------|----------|
 | tickers | 일 | SQL (현재월) + 프로그램 |
-| trades | 월 | SQL (현재월) + 프로그램 |
+| trades | 일 | SQL (현재월) + 프로그램 |
 | candles_seconds | 일 | SQL (현재월) + 프로그램 |
 | candles_minutes | 월 | SQL (현재월) + 프로그램 |
 | candles_days | 월 | SQL (현재월) + 프로그램 |
@@ -229,8 +213,8 @@ collectors:
 
 **프로그램 시작 시:**
 1. 기존 파티션 조회
-2. 월별 테이블 (trades, candles_minutes, candles_days): 마지막 파티션 ~ 현재 월 사이 빈 칸 생성 (gap-filling)
-3. 일별 테이블 (tickers, candles_seconds): 마지막 파티션 ~ 현재 일 사이 빈 칸 생성 (gap-filling)
+2. 월별 테이블 (candles_minutes, candles_days): 마지막 파티션 ~ 현재 월 사이 빈 칸 생성 (gap-filling)
+3. 일별 테이블 (tickers, trades, candles_seconds): 마지막 파티션 ~ 현재 일 사이 빈 칸 생성 (gap-filling)
 4. 다음 3개월분 월 파티션 생성
 
 **Cron (일일):**
@@ -263,6 +247,7 @@ collectors:
 
 ### 6. 과거 파티션 삭제 (Cron)
 - `tickers` (일 단위): **1개월 이상** 경과된 파티션 삭제
+- `trades` (일 단위): **1개월 이상** 경과된 파티션 삭제
 - `candles_seconds` (일 단위): **1개월 이상** 경과된 파티션 삭제
 - `candles_minutes` (분 단위): **6개월 이상** 경과된 파티션 삭제
 - 저장 공간 관리 및 쿼리 성능 유지
@@ -279,7 +264,13 @@ collectors:
 - **Cron으로 1일 1회** 실행하여 신규 페어 발견 시 자동 구독
 - WebSocket 스트림에 동적 구독 메시지 전송
 
-### 9. 수신 데이터 DB Upsert
+### 9. 10분봉 캔들 gap-filling (구독 시작 시)
+- 10분봉 구독 시작 전, 해당 페어의 마지막 캔들 시간과 현재 시간 비교
+- 누락된 캔들 확인 시 REST API (`/v1/candles/minutes/10`) 로 조회
+- 마지막 캔들이 없으면 gap-filling 하지 않음 (새 구독)
+- REST API 응답 데이터를 DB에 `UPSERT`
+
+### 10. 수신 데이터 DB Upsert
 - WebSocket으로 수신된 모든 데이터 (캔들, 호가, 체결 등)를 실시간으로 DB에 저장
 - `INSERT ... ON CONFLICT DO UPDATE` 방식으로 중복 방지
 - REST API로 수집된 데이터도 동일하게 upsert
