@@ -1,11 +1,11 @@
 use serde_json::json;
 use sqlx::{PgPool, Row};
 use tracing::info;
-use crate::config::ApiConfig;
+use crate::config::Config;
 
 pub async fn subscribe_markets(
     pool: &PgPool,
-    _config: &ApiConfig,
+    config: &Config,
     send: impl Fn(&str) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let rows = sqlx::query(
@@ -18,12 +18,13 @@ pub async fn subscribe_markets(
         return Ok(());
     }
 
-    info!("Subscribing to {} markets for candle tick", markets.len());
+    info!("Subscribing to {} markets for candle units {:?}", markets.len(), config.candle.units);
 
+    // 첫 번째 candle unit으로 구독 (config.candle.units[0])
     let candle_msg = json!([
         {
             "format": "DEFAULT",
-            "type": "tick",
+            "type": format!("candle.{}", config.candle.units[0]),
             "codes": markets
         }
     ]);
@@ -34,16 +35,16 @@ pub async fn subscribe_markets(
 }
 
 pub async fn subscribe_new_market(
-    _pool: &PgPool,
+    config: &Config,
     market: &str,
     send: impl Fn(&str) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    info!("Dynamically subscribing to new market: {}", market);
+    info!("Dynamically subscribing to new market: {} with units {:?}", market, config.candle.units);
 
     let candle_msg = json!([
         {
             "format": "DEFAULT",
-            "type": "tick",
+            "type": format!("candle.{}", config.candle.units[0]),
             "codes": [market]
         }
     ]);

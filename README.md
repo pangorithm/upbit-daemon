@@ -68,14 +68,18 @@ DATABASE_URL=postgresql://user:password@localhost:5432/upbit_daemon
 ### config.yaml (git 커밋, 수집 설정)
 
 ```yaml
-rest_url: https://api.upbit.com
-ws_url: wss://api.upbit.com/websocket/v1
-candle_units: [1, 10, 60]     # 구독할 캔들 시간 단위 (분)
-batch_size: 200                # REST 캔들 조회 시 count 파라미터 (최대 200)
-api_calls_per_second: 5
-partition_retain_days: 30
-partition_retain_months: 6
-partition_create: 3
+url:
+  rest: https://api.upbit.com
+  ws: wss://api.upbit.com/websocket/v1
+candle:
+  units: [1, 10, 60]     # 구독할 캔들 시간 단위 (분)
+  count: 200             # REST 캔들 조회 시 count 파라미터 (최대 200)
+rate_limit:
+  api_calls_per_second: 5
+partition:
+  retain_days: 30
+  retain_months: 6
+  create: 3
 ```
 
 ## 데이터 모델

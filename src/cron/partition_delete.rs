@@ -1,11 +1,11 @@
-use chrono::{Days, Months, NaiveDate};
+use chrono::{Days, Months};
 use sqlx::{PgPool, Row};
 use tracing::{error, info};
-use crate::config::ApiConfig;
+use crate::config::Config;
 
-pub async fn delete_daily_partitions(pool: &PgPool, config: &ApiConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn delete_daily_partitions(pool: &PgPool, config: &Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let daily_tables = ["tickers", "trades", "candles_seconds"];
-    let cutoff_date = chrono::Utc::now().naive_utc().date() - Days::new(config.partition_retain_days as u64);
+    let cutoff_date = chrono::Utc::now().naive_utc().date() - Days::new(config.partition.retain_days as u64);
 
     for table_name in &daily_tables {
         let partitions_to_delete = get_partitions_to_delete(pool, table_name, &cutoff_date).await?;
@@ -21,9 +21,9 @@ pub async fn delete_daily_partitions(pool: &PgPool, config: &ApiConfig) -> Resul
     Ok(())
 }
 
-pub async fn delete_monthly_partitions(pool: &PgPool, config: &ApiConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn delete_monthly_partitions(pool: &PgPool, config: &Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let monthly_tables = ["candles_minutes", "candles_days"];
-    let cutoff = chrono::Utc::now().naive_utc() - Months::new(config.partition_retain_months as u32);
+    let cutoff = chrono::Utc::now().naive_utc() - Months::new(config.partition.retain_months as u32);
     let cutoff_date = cutoff.date();
 
     for table_name in &monthly_tables {
@@ -56,7 +56,7 @@ async fn get_partitions_to_delete(pool: &PgPool, table_name: &str, cutoff_date: 
     let mut result = Vec::new();
     for row in rows {
         let partition_name: String = row.get("partition_name");
-        let bound_expr: String = row.get("bound_expr");
+        let _bound_expr: String = row.get("bound_expr");
 
         let partition_date = extract_partition_date(&partition_name, table_name)?;
         if partition_date < *cutoff_date {

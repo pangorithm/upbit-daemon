@@ -1,4 +1,4 @@
-use crate::config::ApiConfig;
+use crate::config::Config;
 use crate::api::quotation::candle;
 use chrono::Duration;
 use reqwest::Client;
@@ -40,71 +40,69 @@ fn get_global_queue() -> ApiQueue {
         .clone()
 }
 
-/// 10분봉 캔들 gap-filling 실행
+/// 지정된 캔들 단위별 gap-filling 실행
 /// DB에서 마지막 캔들 시간을 조회하여 누락된 캔들을 REST API로 채움
-/// - 마지막 캔들이 없으면 gap-filling 하지 않음 (새 구독)
-/// - gap_minutes / candle_unit 로 필요한 캔들 개수 계산
-/// - batch_size 단위로 큐에 배치 추가 (각 배치별 correct한 to 시간 계산)
-/// - 백그라운드 태스크 시작 후 큐 비워질 때까지 대기
-pub async fn fill_candles_minute_gap(
+pub async fn fill_candle_gaps(
     pool: &PgPool,
     rest: &Client,
-    config: &ApiConfig,
+    config: &Config,
     market: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // DB에서 해당 페어의 마지막 캔들 시간 조회
-    let last_candle_time = get_last_candle_time(pool, market).await?;
+    // 각 candle unit마다 gap-filling 수행
+    for &unit in &config.candle.units {
+        let last_candle_time = get_last_candle_time(pool, market, unit).await?;
 
-    // 마지막 캔들이 없으면 gap-filling 하지 않음 (새 구독)
-    let last_candle_time = last_candle_time.ok_or("No last candle found")?;
+        // 마지막 캔들이 없으면 gap-filling 하지 않음 (새 구독)
+        let last_candle_time = last_candle_time.ok_or("No last candle found")?;
 
-    // 마지막 캔들 시간과 현재 시간 사이 gap(분) 계산
-    let gap_minutes = calculate_gap_minutes(Some(last_candle_time.clone()))?;
+        // 마지막 캔들 시간과 현재 시간 사이 gap(분) 계산
+        let gap_minutes = calculate_gap_minutes(Some(last_candle_time.clone()))?;
 
-    if gap_minutes == 0 {
-        info!(market, unit = config.candle_unit, "No gap in candle data");
-        return Ok(());
+        if gap_minutes == 0 {
+            info!(market, unit, "No gap in candle data");
+            continue;
+        }
+
+        info!(
+            market,
+            gap_minutes,
+            unit,
+            "Adding gap-filling to global queue"
+        );
+
+        // 전역 큐에서 배치별 to 시간 계산 후 DTO로 큐에 추가 (과거부터 현재 순서)
+        let queue = get_global_queue();
+        let total_candles_needed = gap_minutes / unit;
+        let mut remaining_candles = total_candles_needed;
+
+        // 마지막 캔들 시간부터 현재 시간까지 과거→현재 순서로 배치 생성
+        let mut current_from = last_candle_time
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .expect("Failed to parse last_candle_time");
+
+        while remaining_candles > 0 {
+            let batch_size = std::cmp::min(remaining_candles, config.candle.count);
+            let to_str = current_from
+                .checked_add_signed(Duration::minutes((batch_size * unit) as i64))
+                .expect("Time overflow")
+                .format("%Y-%m-%dT%H:%M:%S+00:00")
+                .to_string();
+            queue.lock().await.push_back(ApiRequestDto::CandlesMinutes {
+                market: market.to_string(),
+                count: batch_size,
+                to: to_str,
+                unit,
+            });
+            current_from = current_from
+                .checked_add_signed(Duration::minutes((batch_size * unit) as i64))
+                .expect("Time overflow");
+            remaining_candles -= batch_size;
+        }
+
+        // 백그라운드 태스크 시작 (이미 실행 중이면 중복 생성 안 됨)
+        let handle = start_background_task(queue, pool.clone(), rest.clone(), config.clone());
+        drop(handle);
     }
-
-    info!(
-        market,
-        gap_minutes,
-        unit = config.candle_unit,
-        "Adding gap-filling to global queue"
-    );
-
-    // 전역 큐에서 배치별 to 시간 계산 후 DTO로 큐에 추가 (과거부터 현재 순서)
-    let queue = get_global_queue();
-    let total_candles_needed = gap_minutes / config.candle_unit;
-    let mut remaining_candles = total_candles_needed;
-
-    // 마지막 캔들 시간부터 현재 시간까지 과거→현재 순서로 배치 생성
-    let mut current_from = last_candle_time
-        .parse::<chrono::DateTime<chrono::Utc>>()
-        .expect("Failed to parse last_candle_time");
-
-    while remaining_candles > 0 {
-        let batch_size = std::cmp::min(remaining_candles, config.batch_size);
-        let to_str = current_from
-            .checked_add_signed(Duration::minutes((batch_size * config.candle_unit) as i64))
-            .expect("Time overflow")
-            .format("%Y-%m-%dT%H:%M:%S+00:00")
-            .to_string();
-        queue.lock().await.push_back(ApiRequestDto::CandlesMinutes {
-            market: market.to_string(),
-            count: batch_size,
-            to: to_str,
-            unit: config.candle_unit,
-        });
-        current_from = current_from
-            .checked_add_signed(Duration::minutes((batch_size * config.candle_unit) as i64))
-            .expect("Time overflow");
-        remaining_candles -= batch_size;
-    }
-
-    // 백그라운드 태스크 시작 (이미 실행 중이면 중복 생성 안 됨)
-    let handle = start_background_task(queue, pool.clone(), rest.clone(), config.clone());
-    drop(handle);
 
     info!(market, "Gap filled successfully");
 
@@ -113,13 +111,13 @@ pub async fn fill_candles_minute_gap(
 
 /// 백그라운드 태스크 시작
 /// - 큐에서 DTO 꺼내서 API 타입에 따라 적절한 API 호출 후 DB 저장
-/// - API 호출 속도 제한 (초당 5회)
+/// - API 호출 속도 제한 (초당 N회)
 /// - 단일 태스크로 동작 (여러 코드 호출 시 공유)
 fn start_background_task(
     queue: ApiQueue,
     pool: PgPool,
     rest: Client,
-    config: ApiConfig,
+    config: Config,
 ) -> std::sync::Arc<JoinHandle<()>> {
     use std::sync::{Arc, OnceLock};
     static HANDLE: OnceLock<Arc<JoinHandle<()>>> = OnceLock::new();
@@ -127,7 +125,7 @@ fn start_background_task(
     HANDLE.get_or_init(|| {
         Arc::new(tokio::spawn(async move {
             let mut timer = interval(std::time::Duration::from_secs_f64(
-                1.0 / config.api_calls_per_second as f64,
+                1.0 / config.rate_limit.api_calls_per_second as f64,
             ));
 
             loop {
@@ -189,20 +187,18 @@ fn start_background_task(
     }).clone()
 }
 
-async fn get_last_candle_time(pool: &PgPool, market: &str) -> Result<Option<String>, sqlx::Error> {
+async fn get_last_candle_time(pool: &PgPool, market: &str, unit: u32) -> Result<Option<String>, sqlx::Error> {
     sqlx::query(
-        r#"SELECT candle_date_time_utc FROM candles_minutes WHERE market = $1 ORDER BY candle_date_time_utc DESC LIMIT 1"#,
+        r#"SELECT candle_date_time_utc FROM candles_minutes WHERE market = $1 AND unit = $2 ORDER BY candle_date_time_utc DESC LIMIT 1"#,
     )
     .bind(market)
+    .bind(unit as i32)
     .fetch_optional(pool)
     .await
     .map(|row| row.map(|r: sqlx::postgres::PgRow| r.get("candle_date_time_utc")))
 }
 
 /// 마지막 캔들 시간과 현재 시간 사이 gap(분) 계산
-/// - last_candle_time이 Some이면: (now - last_candle_time).num_minutes() 반환
-/// - last_candle_time이 None이면: 0 반환 (gap 없음)
-/// - 음수면: 0 반환 (미래 시간인 경우)
 fn calculate_gap_minutes(
     last_candle_time: Option<String>,
 ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
@@ -225,8 +221,6 @@ fn calculate_gap_minutes(
 
 /// 캔들 데이터를 DB에 INSERT
 /// REST API 응답(JSON)을 파싱하여 candles_minutes 테이블에 저장
-/// - ON CONFLICT DO NOTHING: 중복 데이터 방지
-/// - 10분봉 unit 고정 (config.candle_unit)
 async fn insert_candles(
     pool: &PgPool,
     candles: &[Value],
@@ -241,37 +235,37 @@ async fn insert_candles(
         let trade_price = candle["trade_price"].as_f64().unwrap_or(0.0);
         let candle_acc_trade_price = candle["candle_acc_trade_price"].as_f64().unwrap_or(0.0);
         let candle_acc_trade_volume = candle["candle_acc_trade_volume"].as_f64().unwrap_or(0.0);
-        let unit = 10i64;
+        let unit = candle["unit"].as_u64().unwrap_or(0) as i64;
 
-      sqlx::query(
-             r#"
-             INSERT INTO candles_minutes (
-                 market, candle_date_time_utc, candle_date_time_kst,
-                 opening_price, high_price, low_price, trade_price,
-                 candle_acc_trade_price, candle_acc_trade_volume, unit
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-             ON CONFLICT (market, candle_date_time_utc) DO UPDATE SET
-                 candle_date_time_kst = EXCLUDED.candle_date_time_kst,
-                 opening_price = EXCLUDED.opening_price,
-                 high_price = EXCLUDED.high_price,
-                 low_price = EXCLUDED.low_price,
-                 trade_price = EXCLUDED.trade_price,
-                 candle_acc_trade_price = EXCLUDED.candle_acc_trade_price,
-                 candle_acc_trade_volume = EXCLUDED.candle_acc_trade_volume,
-                 unit = EXCLUDED.unit
-             "#,
-         )
-         .bind(market)
-         .bind(candle_date_time_utc)
-         .bind(candle_date_time_kst)
-         .bind(opening_price)
-         .bind(high_price)
-         .bind(low_price)
-         .bind(trade_price)
-         .bind(candle_acc_trade_price)
-         .bind(candle_acc_trade_volume)
-         .bind(unit)
-         .execute(pool)
+        sqlx::query(
+            r#"
+            INSERT INTO candles_minutes (
+                market, candle_date_time_utc, candle_date_time_kst,
+                opening_price, high_price, low_price, trade_price,
+                candle_acc_trade_price, candle_acc_trade_volume, unit
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (market, candle_date_time_utc) DO UPDATE SET
+                candle_date_time_kst = EXCLUDED.candle_date_time_kst,
+                opening_price = EXCLUDED.opening_price,
+                high_price = EXCLUDED.high_price,
+                low_price = EXCLUDED.low_price,
+                trade_price = EXCLUDED.trade_price,
+                candle_acc_trade_price = EXCLUDED.candle_acc_trade_price,
+                candle_acc_trade_volume = EXCLUDED.candle_acc_trade_volume,
+                unit = EXCLUDED.unit
+            "#,
+        )
+        .bind(market)
+        .bind(candle_date_time_utc)
+        .bind(candle_date_time_kst)
+        .bind(opening_price)
+        .bind(high_price)
+        .bind(low_price)
+        .bind(trade_price)
+        .bind(candle_acc_trade_price)
+        .bind(candle_acc_trade_volume)
+        .bind(unit)
+        .execute(pool)
         .await
         .map_err(|e| {
             error!(error = e.to_string(), market, "Failed to insert candle");

@@ -1,9 +1,9 @@
 use sqlx::PgPool;
 use tracing::{error, info};
-use crate::config::ApiConfig;
+use crate::config::Config;
 use crate::db::partition::create_future_partitions;
 
-pub async fn run_partition_schedule(pool: &PgPool, config: &ApiConfig) -> ! {
+pub async fn run_partition_schedule(pool: &PgPool, config: &Config) -> ! {
     info!("Starting partition schedule");
 
     if let Err(e) = run_once(pool, config).await {
@@ -18,7 +18,7 @@ pub async fn run_partition_schedule(pool: &PgPool, config: &ApiConfig) -> ! {
     }
 }
 
-async fn run_once(pool: &PgPool, config: &ApiConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn run_once(pool: &PgPool, config: &Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Err(e) = create_future_partitions(pool, config).await {
         error!("Failed to create future partitions: {}", e);
     }

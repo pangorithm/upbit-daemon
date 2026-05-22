@@ -26,11 +26,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("DATABASE_URL: set");
 
     let config_str = std::fs::read_to_string(&cli.config_path)?;
-    let api_config: config::ApiConfig = serde_yaml::from_str(&config_str)?;
+    let config: config::Config = serde_yaml::from_str(&config_str)?;
 
-    info!("REST_URL: {}", api_config.rest_url);
-    info!("WS_URL: {}", api_config.ws_url);
-    info!("candle_unit: {}", api_config.candle_unit);
+    info!("REST_URL: {}", config.url.rest);
+    info!("WS_URL: {}", config.url.ws);
+    info!("candle_units: {:?}", config.candle.units);
+    info!("candle_count: {}", config.candle.count);
+    info!("rate_limit: {} calls/sec", config.rate_limit.api_calls_per_second);
+    info!("partition: create={}, retain_days={}, retain_months={}",
+        config.partition.create, config.partition.retain_days, config.partition.retain_months);
 
     let access_key = if cli.access_key.is_empty() { None } else { Some(cli.access_key.clone()) };
     let secret_key = if cli.secret_key.is_empty() { None } else { Some(cli.secret_key.clone()) };
@@ -38,14 +42,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = db::create_pool(&cli.database_url).await?;
     info!("Database connected");
 
-    let rest = api::rest::RestClient::new(&api_config.rest_url, access_key.clone(), secret_key.clone());
+    let rest = api::rest::RestClient::new(&config.url.rest, access_key.clone(), secret_key.clone());
     info!("REST client created");
 
     if let Err(e) = db::init::init_database(&pool).await {
         error!("Database initialization failed: {}", e);
     }
 
-    if let Err(e) = db::partition::create_future_partitions(&pool, &api_config).await {
+    if let Err(e) = db::partition::create_future_partitions(&pool, &config).await {
         error!("Failed to create future partitions: {}", e);
     }
 
@@ -53,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         error!("Failed to fetch markets: {}", e);
     }
 
-    let mut ws = api::websocket::WebSocketClient::connect(api_config.ws_url.clone(), access_key.clone(), secret_key.clone()).await?;
+    let mut ws = api::websocket::WebSocketClient::connect(config.url.ws.clone(), access_key.clone(), secret_key.clone()).await?;
     info!("WebSocket connected");
 
     let markets_rows = sqlx::query(
@@ -62,16 +66,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let markets: Vec<String> = markets_rows.iter().map(|r: &sqlx::postgres::PgRow| r.get("market")).collect();
 
     if !markets.is_empty() {
-        info!("Subscribing to {} markets for 1-min candles", markets.len());
-        let candle_msg = serde_json::json!([
-            {
-                "format": "DEFAULT",
-                "type": "tick",
-                "codes": markets
+        for &unit in &config.candle.units {
+            let candle_msg = serde_json::json!([
+                {
+                    "format": "DEFAULT",
+                    "type": format!("candle.{}", unit),
+                    "codes": markets
+                }
+            ]);
+            if let Err(e) = ws.send(Message::Text(candle_msg.to_string().into())).await {
+                error!("Failed to send candle subscription (unit={}): {}", unit, e);
+            } else {
+                info!("Subscribed to {} markets for candle.{} units", markets.len(), unit);
             }
-        ]);
-        if let Err(e) = ws.send(Message::Text(candle_msg.to_string().into())).await {
-            error!("Failed to send candle subscription: {}", e);
         }
     }
 
@@ -107,7 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let cron_pool = pool.clone();
-    let cron_config = api_config.clone();
+    let cron_config = config.clone();
     tokio::spawn(async move {
         cron::partition_schedule::run_partition_schedule(&cron_pool, &cron_config).await;
     });

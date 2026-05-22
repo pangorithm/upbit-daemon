@@ -23,30 +23,50 @@ pub struct Cli {
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
-pub struct ApiConfig {
+pub struct Config {
+    pub url: UrlConfig,
+    pub candle: CandleConfig,
+    pub rate_limit: RateLimitConfig,
+    pub partition: PartitionConfig,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct UrlConfig {
     #[serde(default = "default_rest_url")]
-    pub rest_url: String,
+    pub rest: String,
     #[serde(default = "default_ws_url")]
-    pub ws_url: String,
-    #[serde(default = "default_candle_unit")]
-    pub candle_unit: u32,
-    #[serde(default = "default_batch_size")]
-    pub batch_size: u32,
+    pub ws: String,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct CandleConfig {
+    #[serde(default = "default_candle_units")]
+    pub units: Vec<u32>,
+    #[serde(default = "default_count")]
+    pub count: u32,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct RateLimitConfig {
     #[serde(default = "default_api_calls_per_second")]
     pub api_calls_per_second: usize,
-    #[serde(default = "default_partition_retain_days")]
-    pub partition_retain_days: u32,
-    #[serde(default = "default_partition_retain_months")]
-    pub partition_retain_months: u32,
-    #[serde(default = "default_partition_create")]
-    pub partition_create: u32,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PartitionConfig {
+    #[serde(default = "default_retain_days")]
+    pub retain_days: u32,
+    #[serde(default = "default_retain_months")]
+    pub retain_months: u32,
+    #[serde(default = "default_create")]
+    pub create: u32,
 }
 
 fn default_rest_url() -> String { "https://api.upbit.com".to_string() }
 fn default_ws_url() -> String { "wss://api.upbit.com/websocket/v1".to_string() }
-fn default_candle_unit() -> u32 { 10 }
-fn default_batch_size() -> u32 { 200 }
+fn default_candle_units() -> Vec<u32> { vec![1, 10, 60] }
+fn default_count() -> u32 { 200 }
 fn default_api_calls_per_second() -> usize { 5 }
-fn default_partition_retain_days() -> u32 { 30 }
-fn default_partition_retain_months() -> u32 { 6 }
-fn default_partition_create() -> u32 { 3 }
+fn default_retain_days() -> u32 { 30 }
+fn default_retain_months() -> u32 { 6 }
+fn default_create() -> u32 { 3 }
