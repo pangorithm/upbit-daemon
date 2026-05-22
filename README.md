@@ -73,10 +73,10 @@ url:
   rest: https://api.upbit.com
   ws: wss://api.upbit.com/websocket/v1
 candle:
-  units: [1m, 10m, 60m, 1d]  # 구독할 캔들 시간 단위 (1m, 10m, 60m, 1d)
+  units: [1m, 10m, 60m, 1d]  # REST API gap-filling할 캔들 시간 단위
   count: 200                  # REST 캔들 조회 시 count 파라미터 (최대 200)
   seconds:
-    markets: [KRW-BTC]       # 1s 캔들 구독할 페어 (빈 배열 = 구독 안 함, gap-filling 없음)
+    markets: [KRW-BTC]       # 1s 캔들 WebSocket 구독할 페어 (빈 배열 = 구독 안 함, gap-filling 없음)
 rate_limit:
   api_calls_per_second: 5
 partition:
@@ -161,30 +161,25 @@ DB 컬럼명은 REST API 응답 필드명을 기준으로 매핑합니다. WebSo
 - `markets` 테이블에 `UPSERT` (동시성 처리: `ON CONFLICT DO UPDATE`)
   - 신규 페어 추가 / 기존 페어 정보 업데이트
 
-### 8. 캔들 구독 관리
-- `config.yaml`의 `candle.units` 배열에 지정된 시간 단위 (예: `[1m, 10m, 60m, 1d]`) 의 캔들을 WebSocket으로 구독
-- `1s` 캔들은 `config.yaml`의 `candle.seconds.markets`에 명시된 페어만 구독 (전체 markets 아님)
-- 프로그램 시작 시 `markets` 테이블에서 페어 목록 조회 후, 해당 페어들의 `candle.units` 단위 캔들을 WebSocket 구독
+### 8. REST API 캔들 gap-filling (60분 Cron)
+- `markets` 테이블에서 수집할 페어 목록 조회 (`candle.market_prefix`으로 필터링)
+- `config.yaml`의 `candle.units` 배열에 지정된 시간 단위 (예: `[1m, 10m, 60m, 1d]`) 의 캔들 데이터를 REST API로 gap-filling
+- **60분 1회** Cron 실행
+- 각 페어, 단위별로 마지막 캔들 시간과 현재 시간 비교
+- 누락된 캔들 확인 시 REST API (`/v1/candles/minutes/{unit}` 또는 `/v1/candles/days` for `1d`) 로 조회 (`candle.count` 개수만큼 batch)
+- REST API 응답 데이터를 DB에 `UPSERT` (`INSERT ... ON CONFLICT DO UPDATE`)
+- 마지막 캔들이 없으면 현재 시간 기준으로 `candle.count` 개수만큼 조회
+
+### 9. 1s 캔들 WebSocket 구독
+- `config.yaml`의 `candle.seconds.markets`에 명시된 페어만 1s 캔들 WebSocket 구독 (전체 markets 아님)
+- 프로그램 시작 시 명시된 페어에 대해 `candle.1s` 구독
 - 구독 중인 스트림 목록은 WebSocket `LIST_SUBSCRIPTIONS` 메서드로 조회 가능
-- `LIST_SUBSCRIPTIONS` 응답과 `markets` 테이블 페어 목록을 비교하여 신규 페어 자동 구독 추가 (1s 단위 제외)
-- **10분 1회** 실행하여 `markets` 테이블 변경사항 확인 및 구독 갱신
-
-### 9. 캔들 gap-filling (구독 시작 시)
-- config.yaml의 `candle.units` 단위 캔들 각각에 대해 구독 시작 전 gap-filling 수행
-- 해당 페어의 마지막 캔들 시간과 현재 시간 비교
-- 누락된 캔들 확인 시 REST API (`/v1/candles/minutes/{unit}`) 로 조회 (`batch_size` 개수만큼)
-- `1d` 단위 캔들은 `/v1/candles/days` 로 조회
 - `1s` 캔들은 gap-filling 하지 않음 (WebSocket 실시간 수신만)
-- 마지막 캔들이 없으면 gap-filling 하지 않음 (새 구독)
-- REST API 응답 데이터를 DB에 `UPSERT`
 
-### 10. 수신 데이터 DB Upsert
-- WebSocket으로 수신된 모든 데이터 (캔들, 호가, 체결 등)를 실시간으로 DB에 저장
+### 10. 실시간 수신 데이터 DB Upsert
+- `1s` 캔들 (`candle.seconds.markets` 명시 페어) WebSocket 수신 데이터를 실시간으로 DB 저장
 - `INSERT ... ON CONFLICT DO UPDATE` 방식으로 중복 방지
-- REST API로 수집된 데이터도 동일하게 upsert
 - WebSocket 필드명 (`code`) → REST 필드명 (`market`) 매핑하여 DB 컬럼에 저장
-- 캔들 데이터는 suffix 기반 테이블 라우팅: `m` → `candles_minutes`, `d` → `candles_days`
-  - `1s` 캔들은 `candle.seconds.markets`에 명시된 페어만 구독, REST gap-filling 없이 WebSocket 수신만 저장
 
 ## 실행
 
