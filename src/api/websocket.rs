@@ -1,5 +1,6 @@
 use super::auth;
 use futures_util::{SinkExt, StreamExt};
+use tokio::time::{interval, Duration};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
@@ -41,5 +42,16 @@ impl WebSocketClient {
             .next()
             .await
             .map(|r| r.map_err(crate::error::AppError::from))
+    }
+
+    pub async fn keepalive(&mut self) {
+        let mut timer = interval(Duration::from_secs(55));
+        loop {
+            timer.tick().await;
+            if self.stream.send(Message::Ping(vec![].into())).await.is_err() {
+                break;
+            }
+            info!("PING sent");
+        }
     }
 }
