@@ -4,14 +4,14 @@ use sqlx::PgPool;
 use crate::api::rest::RestClient;
 
 pub async fn fetch_and_upsert_markets(pool: &PgPool, rest: &RestClient) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let resp = rest.get("/v1/markets", &[]).await?;
+    let resp = rest.get("/v1/market/all", &[]).await?;
     let parsed: Value = serde_json::from_str(&resp)?;
 
-    // /v1/markets returns a flat array
+    // /v1/market/all returns a flat array
     let markets: Vec<Value> = match parsed.as_array() {
         Some(arr) => arr.clone(),
         None => {
-            error!("Upbit /v1/markets returned non-array response: {}", resp);
+            error!("Upbit /v1/market/all returned non-array response: {}", resp);
             return Ok(());
         }
     };
