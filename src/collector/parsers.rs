@@ -11,11 +11,38 @@ pub async fn handle_message(
     let msg_type = msg["type"].as_str().unwrap_or("");
     match msg_type {
         "candle.1s" | "candle.1m" | "candle.3m" | "candle.5m" | "candle.10m" | "candle.15m"
-        | "candle.30m" | "candle.60m" | "candle.240m" => handle_candle_msg(pool, msg).await,
-        "trade" => handle_trade_msg(pool, msg).await,
-        "ticker" => handle_ticker_msg(pool, msg).await,
-        "orderbook" => handle_orderbook_msg(pool, msg).await,
-        _ => Ok(()),
+        | "candle.30m" | "candle.60m" | "candle.240m" => {
+            let market = msg["code"].as_str().unwrap_or("");
+            if let Err(e) = handle_candle_msg(pool, msg).await {
+                error!(type = msg_type, market, error = %e, "Failed to handle candle msg");
+            }
+            Ok(())
+        }
+        "trade" => {
+            let market = msg["code"].as_str().unwrap_or("");
+            if let Err(e) = handle_trade_msg(pool, msg).await {
+                error!(type = msg_type, market, error = %e, "Failed to handle trade msg");
+            }
+            Ok(())
+        }
+        "ticker" => {
+            let market = msg["code"].as_str().unwrap_or("");
+            if let Err(e) = handle_ticker_msg(pool, msg).await {
+                error!(type = msg_type, market, error = %e, "Failed to handle ticker msg");
+            }
+            Ok(())
+        }
+        "orderbook" => {
+            let market = msg["code"].as_str().unwrap_or("");
+            if let Err(e) = handle_orderbook_msg(pool, msg).await {
+                error!(type = msg_type, market, error = %e, "Failed to handle orderbook msg");
+            }
+            Ok(())
+        }
+        _ => {
+            error!(type = msg_type, "Unknown message type");
+            Ok(())
+        }
     }
 }
 

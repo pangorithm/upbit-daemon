@@ -241,28 +241,29 @@ fn generate_partitions_for_current(config: &PartitionConfig, today: &NaiveDateTi
 
 /// Extract date from daily partition name (e.g. tickers_y2026m01d01 → "2026-01-01")
 fn extract_daily_partition_date(partition_name: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let partition_name = partition_name.trim().replace('\r', "");
-    let date_part = partition_name
-        .trim_start_matches(|c: char| !c.is_ascii_digit() && c != 'y' && c != 'm' && c != 'd');
-    if date_part.len() < 9 {
+    let date_part = partition_name.rsplit('_').next().ok_or("Invalid partition name")?;
+    if !date_part.starts_with('y') {
         return Err(format!("Invalid partition name format: {}", partition_name).into());
     }
-    let year = &date_part[1..5];
-    let month = &date_part[5..7];
-    let day = &date_part[7..9];
-    Ok(format!("{}-{}-{}", year, month, day))
+    let without_y = &date_part[1..];
+    let m_pos = without_y.find('m').ok_or("Missing 'm' in partition date")?;
+    let d_pos = without_y[m_pos + 1..].find('d').ok_or("Missing 'd' in partition date")?;
+    let year = without_y[..m_pos].parse::<i32>()?;
+    let month = without_y[m_pos + 1..m_pos + 1 + d_pos].parse::<u32>()?;
+    let day = without_y[m_pos + 1 + d_pos + 1..].parse::<u32>()?;
+    Ok(format!("{}-{:02}-{:02}", year, month, day))
 }
 
 /// Extract month start datetime from monthly partition name (e.g. candles_minutes_y2026m01 → 2026-01-01T00:00:00)
 fn extract_monthly_partition_start(partition_name: &str) -> Result<NaiveDateTime, Box<dyn std::error::Error + Send + Sync>> {
-    let partition_name = partition_name.trim().replace('\r', "");
-    let date_part = partition_name
-        .trim_start_matches(|c: char| !c.is_ascii_digit() && c != 'y' && c != 'm');
-    if date_part.len() < 7 {
+    let date_part = partition_name.rsplit('_').next().ok_or("Invalid partition name")?;
+    if !date_part.starts_with('y') {
         return Err(format!("Invalid partition name format: {}", partition_name).into());
     }
-    let year = date_part[1..5].parse::<i32>()?;
-    let month = date_part[5..7].parse::<u32>()?;
+    let without_y = &date_part[1..];
+    let m_pos = without_y.find('m').ok_or("Missing 'm' in partition date")?;
+    let year = without_y[..m_pos].parse::<i32>()?;
+    let month = without_y[m_pos + 1..].parse::<u32>()?;
     let day = NaiveDate::from_ymd_opt(year, month, 1)
         .ok_or("Invalid date")?;
     Ok(day.and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap()))
