@@ -4,7 +4,7 @@
 
 **Endpoint**: `GET https://api.upbit.com/v1/market/all`
 
-**Rate Limit**: 초당 최대 10회 (IP 단위, 캔들 그룹 공유)
+**Rate Limit**: 초당 최대 10회 (IP 단위, market 그룹 공유)
 
 ## 파라미터
 

@@ -84,8 +84,8 @@ JSON Array 형식, 다음 Object들을 포함:
 | `type` | String | Required | 데이터 항목 (`ticker`, `trade`, `orderbook`, `candle.{unit}`, `myAsset`, `myOrder`) |
 | `codes` | String | Conditional | 조회 페어 목록. ticker/trade/orderbook/candle 필수 |
 | `level` | String | Optional | 호가 모아보기 단위 (orderbook 전용) |
-| `is_only_snapshot` | String | Optional | 스냅샷만 요청 |
-| `is_only_realtime` | String | Optional | 실시간 스트림만 요청 |
+| `is_only_snapshot` | Boolean | Optional | 스냅샷만 요청 |
+| `is_only_realtime` | Boolean | Optional | 실시간 스트림만 요청 |
 
 ### 3. Format Object (마지막 요소)
 

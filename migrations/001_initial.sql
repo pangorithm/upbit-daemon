@@ -75,13 +75,9 @@ CREATE TABLE tickers_y2026m01d31 PARTITION OF tickers FOR VALUES FROM ('20260131
 CREATE TABLE trades (
     market VARCHAR(30) NOT NULL,
     trade_date_utc VARCHAR(10) NOT NULL,
-    trade_time_utc VARCHAR(12) NOT NULL,
-    timestamp BIGINT NOT NULL,
+    trade_time_utc VARCHAR(10) NOT NULL,
     trade_price DOUBLE PRECISION NOT NULL,
     trade_volume DOUBLE PRECISION NOT NULL,
-    prev_closing_price DOUBLE PRECISION NOT NULL,
-    change_price DOUBLE PRECISION NOT NULL,
-    ask_bid VARCHAR(10) NOT NULL,
     sequential_id BIGINT NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 ) PARTITION BY RANGE (trade_date_utc);

@@ -16,20 +16,20 @@ Path 파라미터 `unit`으로 캔들 너비 지정 가능: **1, 3, 5, 10, 15, 3
 
 ## 파라미터
 
-| 파라미터 | 형식 | 필수 | 설명 |
-|---------|------|------|------|
-| `unit` | integer | 필수 | 캔들 단위 (1, 3, 5, 10, 15, 30, 60, 240) |
-| `market` | string | 필수 | 페어 코드 |
-| `to` | string | 선택 | 종료 시각 (ISO 8601). 미지정 시 요청 시각 기준 |
-| `count` | integer | 선택 | 캔들 개수. 최대 200, 기본값 1 |
+| 파라미터 | 위치 | 형식 | 필수 | 설명 |
+|---------|------|------|------|------|
+| `unit` | Path | integer | 필수 | 캔들 단위 (1, 3, 5, 10, 15, 30, 60, 240) |
+| `market` | Query | string | 필수 | 페어 코드 |
+| `to` | Query | string | 선택 | 종료 시각 (ISO 8601). 미지정 시 요청 시각 기준 |
+| `count` | Query | integer | 선택 | 캔들 개수. 최대 200, 기본값 1 |
 
 ## 응답 필드
 
 | 필드 | 형식 | 설명 |
 |-----|------|------|
 | `market` | string | 페어 코드 |
-| `candle_date_time_utc` | string | 시작 시각 (UTC) |
-| `candle_date_time_kst` | string | 시작 시각 (KST) |
+| `candle_date_time_utc` | string | 시작 시각 (UTC) 포맷: `yyyy-MM-dd'T'HH:mm:ss` |
+| `candle_date_time_kst` | string | 시작 시각 (KST) 포맷: `yyyy-MM-dd'T'HH:mm:ss` |
 | `opening_price` | number | 시가 |
 | `high_price` | number | 고가 |
 | `low_price` | number | 저가 |

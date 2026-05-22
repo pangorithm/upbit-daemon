@@ -19,8 +19,8 @@
 | 필드 | 형식 | 설명 |
 |-----|------|------|
 | `market` | string | 페어 코드 |
-| `candle_date_time_utc` | string | 시작 시각 (UTC) |
-| `candle_date_time_kst` | string | 시작 시각 (KST) |
+| `candle_date_time_utc` | string | 시작 시각 (UTC) 포맷: `yyyy-MM-dd'T'HH:mm:ss` |
+| `candle_date_time_kst` | string | 시작 시각 (KST) 포맷: `yyyy-MM-dd'T'HH:mm:ss` |
 | `opening_price` | number | 시가 |
 | `high_price` | number | 고가 |
 | `low_price` | number | 저가 |
