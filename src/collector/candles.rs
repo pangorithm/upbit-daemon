@@ -1,6 +1,8 @@
-use super::config::ApiConfig;
+use crate::config::ApiConfig;
 use crate::api::quotation::candle;
-use chrono::{Duration, Utc};
+use chrono::Duration;
+use reqwest::Client;
+use sqlx::Row;
 use serde_json::Value;
 use sqlx::PgPool;
 use std::collections::VecDeque;
@@ -57,7 +59,7 @@ pub async fn fill_candles_minute_gap(
     let last_candle_time = last_candle_time.ok_or("No last candle found")?;
 
     // 마지막 캔들 시간과 현재 시간 사이 gap(분) 계산
-    let gap_minutes = calculate_gap_minutes(Some(last_candle_time))?;
+    let gap_minutes = calculate_gap_minutes(Some(last_candle_time.clone()))?;
 
     if gap_minutes == 0 {
         info!(market, unit = config.candle_unit, "No gap in candle data");
@@ -102,7 +104,7 @@ pub async fn fill_candles_minute_gap(
 
     // 백그라운드 태스크 시작 (이미 실행 중이면 중복 생성 안 됨)
     let handle = start_background_task(queue, pool.clone(), rest.clone(), config.clone());
-    handle.await.unwrap();
+    drop(handle);
 
     info!(market, "Gap filled successfully");
 
@@ -118,93 +120,83 @@ fn start_background_task(
     pool: PgPool,
     rest: Client,
     config: ApiConfig,
-) -> JoinHandle<()> {
-    use std::sync::OnceLock;
-    static HANDLE: OnceLock<JoinHandle<()>> = OnceLock::new();
+) -> std::sync::Arc<JoinHandle<()>> {
+    use std::sync::{Arc, OnceLock};
+    static HANDLE: OnceLock<Arc<JoinHandle<()>>> = OnceLock::new();
 
-    HANDLE
-        .get_or_init(|| {
-            tokio::spawn(async move {
-                let mut timer = interval(std::time::Duration::from_secs_f64(
-                    1.0 / config.api_calls_per_second as f64,
-                ));
+    HANDLE.get_or_init(|| {
+        Arc::new(tokio::spawn(async move {
+            let mut timer = interval(std::time::Duration::from_secs_f64(
+                1.0 / config.api_calls_per_second as f64,
+            ));
 
-                loop {
-                    timer.tick().await;
+            loop {
+                timer.tick().await;
 
-                    let batch = {
-                        let mut q = queue.lock().await;
-                        q.pop_front()
-                    };
+                let batch = {
+                    let mut q = queue.lock().await;
+                    q.pop_front()
+                };
 
-                    match batch {
-                        Some(request) => match request {
-                            ApiRequestDto::CandlesMinutes {
-                                market,
-                                count,
-                                to,
-                                unit,
-                            } => {
-                                match candle::get_candles_minutes(
-                                    &rest, &market, unit, count, &to,
-                                )
-                                .await
-                                {
-                                    Ok(candles) => {
-                                        if let Err(e) = insert_candles(&pool, &candles).await {
-                                            error!(
-                                                api_type = "CandlesMinutes",
-                                                market,
-                                                error = e.to_string(),
-                                                "Failed to insert candles from background task"
-                                            );
-                                        } else {
-                                            info!(
-                                                api_type = "CandlesMinutes",
-                                                market,
-                                                count = candles.len(),
-                                                "Batch fetched and inserted via global queue"
-                                            );
-                                        }
-                                    }
-                                    Err(e) => {
+                match batch {
+                    Some(request) => match request {
+                        ApiRequestDto::CandlesMinutes {
+                            market,
+                            count,
+                            to,
+                            unit,
+                        } => {
+                            match candle::get_candles_minutes(
+                                &rest, &market, unit, count, &to,
+                            )
+                            .await
+                            {
+                                Ok(candles) => {
+                                    if let Err(e) = insert_candles(&pool, &candles).await {
                                         error!(
                                             api_type = "CandlesMinutes",
                                             market,
-                                            count,
                                             error = e.to_string(),
-                                            "Failed to fetch candles"
+                                            "Failed to insert candles from background task"
+                                        );
+                                    } else {
+                                        info!(
+                                            api_type = "CandlesMinutes",
+                                            market,
+                                            count = candles.len(),
+                                            "Batch fetched and inserted via global queue"
                                         );
                                     }
                                 }
+                                Err(e) => {
+                                    error!(
+                                        api_type = "CandlesMinutes",
+                                        market,
+                                        count,
+                                        error = e.to_string(),
+                                        "Failed to fetch candles"
+                                    );
+                                }
                             }
-                        },
-                        None => {
-                            break;
                         }
+                    },
+                    None => {
+                        break;
                     }
                 }
-            })
-            .clone()
-        })
-        .clone()
+            }
+        }))
+    }).clone()
 }
 
-/// DB에서 해당 페어의 마지막 캔들 시간 조회
-/// candles_minutes 테이블에서 market에 맞춰 가장 최근 candle_date_time_utc 반환
 async fn get_last_candle_time(pool: &PgPool, market: &str) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar!(
-        r#"
-        SELECT candle_date_time_utc
-        FROM candles_minutes
-        WHERE market = $1
-        ORDER BY candle_date_time_utc DESC
-        LIMIT 1
-        "#,
-        market
+    sqlx::query(
+        r#"SELECT candle_date_time_utc FROM candles_minutes WHERE market = $1 ORDER BY candle_date_time_utc DESC LIMIT 1"#,
     )
+    .bind(market)
     .fetch_optional(pool)
     .await
+    .map(|row| row.map(|r: sqlx::postgres::PgRow| r.get("candle_date_time_utc")))
 }
 
 /// 마지막 캔들 시간과 현재 시간 사이 gap(분) 계산
@@ -251,35 +243,35 @@ async fn insert_candles(
         let candle_acc_trade_volume = candle["candle_acc_trade_volume"].as_f64().unwrap_or(0.0);
         let unit = 10i64;
 
-       sqlx::query!(
-            r#"
-            INSERT INTO candles_minutes (
-                market, candle_date_time_utc, candle_date_time_kst,
-                opening_price, high_price, low_price, trade_price,
-                candle_acc_trade_price, candle_acc_trade_volume, unit
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            ON CONFLICT (market, candle_date_time_utc) DO UPDATE SET
-                candle_date_time_kst = EXCLUDED.candle_date_time_kst,
-                opening_price = EXCLUDED.opening_price,
-                high_price = EXCLUDED.high_price,
-                low_price = EXCLUDED.low_price,
-                trade_price = EXCLUDED.trade_price,
-                candle_acc_trade_price = EXCLUDED.candle_acc_trade_price,
-                candle_acc_trade_volume = EXCLUDED.candle_acc_trade_volume,
-                unit = EXCLUDED.unit
-            "#,
-            market,
-            candle_date_time_utc,
-            candle_date_time_kst,
-            opening_price,
-            high_price,
-            low_price,
-            trade_price,
-            candle_acc_trade_price,
-            candle_acc_trade_volume,
-            unit
-        )
-        .execute(pool)
+      sqlx::query(
+             r#"
+             INSERT INTO candles_minutes (
+                 market, candle_date_time_utc, candle_date_time_kst,
+                 opening_price, high_price, low_price, trade_price,
+                 candle_acc_trade_price, candle_acc_trade_volume, unit
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             ON CONFLICT (market, candle_date_time_utc) DO UPDATE SET
+                 candle_date_time_kst = EXCLUDED.candle_date_time_kst,
+                 opening_price = EXCLUDED.opening_price,
+                 high_price = EXCLUDED.high_price,
+                 low_price = EXCLUDED.low_price,
+                 trade_price = EXCLUDED.trade_price,
+                 candle_acc_trade_price = EXCLUDED.candle_acc_trade_price,
+                 candle_acc_trade_volume = EXCLUDED.candle_acc_trade_volume,
+                 unit = EXCLUDED.unit
+             "#,
+         )
+         .bind(market)
+         .bind(candle_date_time_utc)
+         .bind(candle_date_time_kst)
+         .bind(opening_price)
+         .bind(high_price)
+         .bind(low_price)
+         .bind(trade_price)
+         .bind(candle_acc_trade_price)
+         .bind(candle_acc_trade_volume)
+         .bind(unit)
+         .execute(pool)
         .await
         .map_err(|e| {
             error!(error = e.to_string(), market, "Failed to insert candle");

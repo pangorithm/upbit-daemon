@@ -22,7 +22,7 @@ pub struct Cli {
     pub config_path: PathBuf,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct ApiConfig {
     #[serde(default = "default_rest_url")]
     pub rest_url: String,

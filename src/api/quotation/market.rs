@@ -1,11 +1,11 @@
-use reqwest::Client;
 use serde_json::Value;
 use tracing::{error, info};
 use sqlx::PgPool;
+use crate::api::rest::RestClient;
 
-pub async fn fetch_and_upsert_markets(pool: &PgPool, rest: &Client) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let url = "https://api.upbit.com/v1/markets";
-    let markets: Vec<Value> = rest.get(url).send().await?.json().await?;
+pub async fn fetch_and_upsert_markets(pool: &PgPool, rest: &RestClient) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let resp = rest.get("/v1/markets", &[]).await?;
+    let markets: Vec<Value> = serde_json::from_str(&resp)?;
 
     info!("Fetched {} markets from Upbit API", markets.len());
 

@@ -1,5 +1,5 @@
 use chrono::{Days, Months, NaiveDateTime};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use tracing::{error, info};
 use crate::config::ApiConfig;
 
@@ -52,7 +52,7 @@ async fn get_partitions_to_delete(pool: &PgPool, table_name: &str, cutoff: &str)
         let partition_name: String = row.get("partition_name");
         let partition_bounds: String = row.get("partition_bounds");
         let start_str = extract_partition_start(&partition_bounds);
-        let start_dt = NaiveDateTime::parse_from_str(&start_str, "%Y-%m-%d %H:%M:%S")
+        let _start_dt = NaiveDateTime::parse_from_str(&start_str, "%Y-%m-%d %H:%M:%S")
             .map_err(|e| format!("Failed to parse partition start '{}': {}", start_str, e))?;
 
         let sql = format!("DROP TABLE IF EXISTS {}", partition_name);

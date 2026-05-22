@@ -69,7 +69,7 @@ async fn handle_trade_msg(pool: &PgPool, msg: &Value) -> Result<(), Box<dyn std:
     let trade_price = msg["trade_price"].as_f64().unwrap_or(0.0);
     let trade_volume = msg["trade_volume"].as_f64().unwrap_or(0.0);
     let sequential_id = msg["sequential_id"].as_i64().unwrap_or(0);
-    let timestamp = msg["timestamp"].as_i64().unwrap_or(0);
+     let _trade_timestamp = msg["timestamp"].as_i64().unwrap_or(0);
 
     let trade_date_utc = msg["trade_date_utc"].as_str().unwrap_or("");
     let trade_time_utc = msg["trade_time_utc"].as_str().unwrap_or("");
