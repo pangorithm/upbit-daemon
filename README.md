@@ -62,6 +62,9 @@ upbit-daemon/
 │   │   └── models.rs        # sqlx 매크로 기반 모델
 │   ├── api/
 │   │   ├── mod.rs           # Upbit API 클라이언트
+│   │   ├── auth.rs          # JWT 생성
+│   │   ├── quotation/
+│   │   │   └── candle.rs    # 시세 조회 - 분 캔들
 │   │   ├── rest.rs          # REST API 호출 (reqwest)
 │   │   └── websocket.rs     # WebSocket 구독 (tokio-tungstenite)
 │   └── collector/
@@ -249,7 +252,7 @@ partition_create_months: 3
 - `tickers` (일 단위): **1개월 이상** 경과된 파티션 삭제
 - `trades` (일 단위): **1개월 이상** 경과된 파티션 삭제
 - `candles_seconds` (일 단위): **1개월 이상** 경과된 파티션 삭제
-- `candles_minutes` (분 단위): **6개월 이상** 경과된 파티션 삭제
+- `candles_minutes` (월 단위): **6개월 이상** 경과된 파티션 삭제
 - 저장 공간 관리 및 쿼리 성능 유지
 
 ### 7. 페어 목록 조회
@@ -289,18 +292,16 @@ DATABASE_URL=... cargo sqlx migrate run
 cargo run
 ```
 
-## 개발 단계
+## 완료된 단계
 
 | 단계 | 내용 | 상태 |
 |------|------|------|
 | 1 | 프로젝트 초기화, Cargo.toml, .env | 완료 |
 | 2 | 마이그레이션 (파티션 테이블) | 완료 |
-| 3 | config.rs (YAML + .env 로드) | 미실시 |
-| 4 | db.rs (sqlx Pool, 연결 관리) | 미실시 |
-| 5 | api/rest.rs (REST API 호출) | 미실시 |
-| 6 | api/websocket.rs (WebSocket 구독) | 미실시 |
-| 7 | collector/tickers.rs (현재가 수집) | 미실시 |
-| 8 | collector/candles.rs (캔들 수집) | 미실시 |
-| 9 | collector/trades.rs (체결 수집) | 미실시 |
-| 10 | collector/orderbooks.rs (호가 WebSocket) | 미실시 |
-| 11 | main.rs (조립) | 미실시 |
+| 3 | config.rs (YAML + .env 로드) | 완료 |
+| 4 | db.rs (sqlx Pool, 연결 관리) | 완료 |
+| 5 | api/rest.rs (REST API 호출) | 완료 |
+| 6 | api/websocket.rs (WebSocket 구독) | 완료 |
+| 7 | api/auth.rs (JWT 생성) | 완료 |
+| 8 | api/candles_api.rs (캔들 조회 API) | 완료 |
+| 9 | collector/candles.rs (캔들 gap-filling) | 완료 |

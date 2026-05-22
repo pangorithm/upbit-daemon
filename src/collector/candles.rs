@@ -1,5 +1,5 @@
 use super::config::ApiConfig;
-use crate::api::candles_api;
+use crate::api::quotation::candle;
 use chrono::{Duration, Utc};
 use serde_json::Value;
 use sqlx::PgPool;
@@ -145,7 +145,7 @@ fn start_background_task(
                                 to,
                                 unit,
                             } => {
-                                match candles_api::get_candles_minutes(
+                                match candle::get_candles_minutes(
                                     &rest, &market, unit, count, &to,
                                 )
                                 .await
