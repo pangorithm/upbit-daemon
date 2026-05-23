@@ -81,9 +81,11 @@ candle:
 rate_limit:
   api_calls_per_second: 5
 partition:
-  retain_days: 30
-  retain_months: 6
-  create: 3
+  retain_days: 10              # 일 단위 파티션 유지일수
+  retain_months: 6             # 월 단위 파티션 유지개월수
+  create: 3                    # 미리 생성할 미래 파티션 개수
+cron:
+  candle: "*/10 * * * *"       # 캔들 gap-filling + 페어 목록 갱신 cron (10분 간격)
 ```
 
 ## 데이터 모델
@@ -121,7 +123,7 @@ DB 컬럼명은 REST API 응답 필드명을 기준으로 매핑합니다. WebSo
 
 **Cron (24시간마다):**
 1. 다음 3개월분 월 파티션 생성 (이미 있으면 skip)
-2. 과거 파티션 삭제 (tickers, trades, candles_seconds: 30일 이상 / candles_minutes, candles_days: 6개월 이상)
+2. 과거 파티션 삭제 (`partition.retain_days`, `partition.retain_months` 참조)
 
 ## 실행 시나리오
 
@@ -149,32 +151,30 @@ DB 컬럼명은 REST API 응답 필드명을 기준으로 매핑합니다. WebSo
 - Cron (24시간마다) 으로 계속 생성 (이미 있으면 skip)
 
 ### 6. 과거 파티션 삭제 (Cron과 함께 실행)
-- `tickers` (일 단위): **30일 이상** 경과된 파티션 삭제
-- `trades` (일 단위): **30일 이상** 경과된 파티션 삭제
-- `candles_seconds` (일 단위): **30일 이상** 경과된 파티션 삭제
-- `candles_minutes` (월 단위): **6개월 이상** 경과된 파티션 삭제
-- `candles_days` (월 단위): **6개월 이상** 경과된 파티션 삭제
+- `tickers`, `trades`, `candles_seconds` (일 단위): `partition.retain_days` 이상 된 파티션 삭제
+- `candles_minutes`, `candles_days` (월 단위): `partition.retain_months` 이상 된 파티션 삭제
 - 저장 공간 관리 및 쿼리 성능 유지
 
 ### 7. 페어 목록 조회
 - REST API (`/v1/markets`) 로 업비트 전체 페어 목록 조회
-- **프로그램 시작 시 1회** 및 **Cron으로 1시간 1회** 실행
+- **프로그램 시작 시 1회** 및 **Cron으로 10분 1회** (`cron.candle` 설정 참조) 실행
 - `markets` 테이블에 `UPSERT` (동시성 처리: `ON CONFLICT DO UPDATE`)
   - 신규 페어 추가 / 기존 페어 정보 업데이트
 
 ### 8. REST API 캔들 gap-filling
 - `markets` 테이블에서 수집할 페어 목록 조회 (`candle.market_prefix`으로 필터링)
 - `config.yaml`의 `candle.units` 배열에 지정된 시간 단위 (예: `[1m, 10m, 60m, 1d]`) 의 캔들 데이터를 REST API로 gap-filling
-- **프로그램 시작 시 1회** 및 **Cron으로 1시간 1회** 실행
-- 각 페어, 단위별로 마지막 캔들 시간과 현재 시간 비교
+- **프로그램 시작 시 1회** 및 **Cron으로 10분 1회** (`cron.candle` 설정 참조) 실행
+- 각 페어, 단위별로 DB에서 마지막 캔들 시간 조회 후 현재 시간과 비교
 - 누락된 캔들 확인 시 REST API (`/v1/candles/minutes/{unit}` 또는 `/v1/candles/days` for `1d`) 로 조회 (`candle.count` 개수만큼 batch)
 - REST API 응답 데이터를 DB에 `UPSERT` (`INSERT ... ON CONFLICT DO UPDATE`)
-- 마지막 캔들이 없으면 마지막 캔들 시간을 (현재시간 - `unit` * `candle.count`) 으로 가정 후 gap-filling
+- 마지막 캔들이 없는 경우 (최초 실행): 마지막 캔들 시간을 (현재시간 - `unit` * `candle.count`) 으로 가정 후 gap-filling
 
 ### 9. 1s 캔들 WebSocket 구독
 - `config.yaml`의 `candle.seconds.markets`에 명시된 페어만 1s 캔들 WebSocket 구독 (전체 markets 아님)
 - 프로그램 시작 시 명시된 페어에 대해 `candle.1s` 구독
 - 구독 중인 스트림 목록은 WebSocket `LIST_SUBSCRIPTIONS` 메서드로 조회 가능
+- WebSocket 연결 끊김 시 자동 재연결 로직 포함
 - `1s` 캔들은 gap-filling 하지 않음 (WebSocket 실시간 수신만)
 
 ### 10. 실시간 수신 데이터 DB Upsert

@@ -13,3 +13,5 @@ partition:
   retain_days: 10
   retain_months: 6
   create: 3
+cron:
+  candle: "*/10 * * * *"
