@@ -4,7 +4,7 @@ use crate::config::Config;
 use crate::db::partition::create_future_partitions;
 
 pub async fn run_partition_schedule(pool: &PgPool, config: &Config) -> ! {
-    info!("Starting partition schedule (cron.market)");
+    info!("Starting partition schedule (cron.partition)");
 
     if let Err(e) = run_once(pool, config).await {
         error!("Partition schedule failed: {}", e);
@@ -12,7 +12,7 @@ pub async fn run_partition_schedule(pool: &PgPool, config: &Config) -> ! {
 
     loop {
         let next = crate::cron::interval::next_cron_instant(
-            config.cron.market.as_deref(),
+            config.cron.partition.as_deref(),
             tokio::time::Instant::now() + std::time::Duration::from_secs(600),
         );
         tokio::time::sleep_until(next).await;

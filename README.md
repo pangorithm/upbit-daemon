@@ -94,6 +94,7 @@ cron:
   candle: "*/10 * * * *"       # 캔들 gap-filling cron
   market: "0 0 * * *"          # 페어 목록 갱신 cron
   subscribe: "0 0 * * *"       # WebSocket 구독 갱신 cron
+  partition: "0 0 * * *"       # 파티션 생성/삭제 cron
 ```
 
 ## 데이터 모델

@@ -61,6 +61,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ref cron_expr) = config.cron.subscribe {
         info!("cron.subscribe: {}", cron_expr);
     }
+    if let Some(ref cron_expr) = config.cron.partition {
+        info!("cron.partition: {}", cron_expr);
+    }
 
     let access_key = if cli.access_key.is_empty() { None } else { Some(cli.access_key.clone()) };
     let secret_key = if cli.secret_key.is_empty() { None } else { Some(cli.secret_key.clone()) };

@@ -20,3 +20,4 @@ cron:
   candle: "*/10 * * * *"
   market: "0 0 * * *"
   subscribe: "0 0 * * *"
+  partition: "0 0 * * *"

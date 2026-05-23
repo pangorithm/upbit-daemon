@@ -91,6 +91,8 @@ pub struct CronConfig {
     pub market: Option<String>,
     #[serde(default)]
     pub subscribe: Option<String>,
+    #[serde(default)]
+    pub partition: Option<String>,
 }
 
 fn default_rest_url() -> String { "https://api.upbit.com".to_string() }
