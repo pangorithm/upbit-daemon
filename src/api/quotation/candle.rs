@@ -24,8 +24,9 @@ pub async fn get_candles_days(
     rest: &RestClient,
     market: &str,
     to: &str,
+    count: u32,
 ) -> Result<Vec<Value>, crate::error::AppError> {
-    let query = &[("market", market), ("to", to)];
+    let query = &[("market", market), ("to", to), ("count", &count.to_string())];
     let resp = rest.get("/v1/candles/days", query).await?;
     Ok(serde_json::from_str(&resp)?)
 }

@@ -22,6 +22,7 @@ enum ApiRequestDto {
     CandlesDays {
         market: String,
         to: String,
+        count: u32,
     },
 }
 
@@ -159,15 +160,22 @@ pub async fn fill_candle_days_gap(
             );
 
             let queue = get_global_queue();
-            let to_str = chrono::Utc::now()
-                .checked_add_signed(chrono::Duration::days(1))
-                .expect("Time overflow")
-                .format("%Y-%m-%d")
-                .to_string();
-            queue.lock().await.push_back(ApiRequestDto::CandlesDays {
-                market: market.to_string(),
-                to: to_str,
-            });
+            let mut remaining_candles = diff_days as u32;
+
+            while remaining_candles > 0 {
+                let batch_size = std::cmp::min(remaining_candles, config.candle.count);
+                let to_str = chrono::Utc::now()
+                    .checked_add_signed(chrono::Duration::days(batch_size as i64))
+                    .expect("Time overflow")
+                    .format("%Y-%m-%d")
+                    .to_string();
+                queue.lock().await.push_back(ApiRequestDto::CandlesDays {
+                    market: market.to_string(),
+                    to: to_str,
+                    count: batch_size,
+                });
+                remaining_candles -= batch_size;
+            }
 
             start_background_task(queue, pool.clone(), rest.clone(), config.clone());
             info!(market, "Daily candle gap filled successfully");
@@ -189,6 +197,7 @@ pub async fn fill_candle_days_gap(
             queue.lock().await.push_back(ApiRequestDto::CandlesDays {
                 market: market.to_string(),
                 to: to_str,
+                count: config.candle.count,
             });
 
             start_background_task(queue, pool.clone(), rest.clone(), config.clone());
@@ -307,11 +316,13 @@ fn start_background_task(
                             ApiRequestDto::CandlesDays {
                                 market,
                                 to,
+                                count,
                             } => {
                                 match candle::get_candles_days(
                                     &rest_client,
                                     &market,
                                     &to,
+                                    count,
                                 )
                                 .await
                                 {
@@ -336,6 +347,7 @@ fn start_background_task(
                                         error!(
                                             api_type = "CandlesDays",
                                             market,
+                                            count,
                                             error = e.to_string(),
                                             "Failed to fetch daily candles"
                                         );
@@ -495,20 +507,22 @@ async fn insert_candles(
                 })?;
             }
             _ => {
+                let timestamp = candle["timestamp"].as_i64().unwrap_or(0);
                 let unit_val = candle["unit"].as_u64().unwrap_or(0) as i64;
                 sqlx::query(
                     r#"
                     INSERT INTO candles_minutes (
                         market, candle_date_time_utc, candle_date_time_kst,
                         opening_price, high_price, low_price, trade_price,
-                        candle_acc_trade_price, candle_acc_trade_volume, unit
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                        timestamp, candle_acc_trade_price, candle_acc_trade_volume, unit
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                     ON CONFLICT (market, candle_date_time_utc, unit) DO UPDATE SET
                         candle_date_time_kst = EXCLUDED.candle_date_time_kst,
                         opening_price = EXCLUDED.opening_price,
                         high_price = EXCLUDED.high_price,
                         low_price = EXCLUDED.low_price,
                         trade_price = EXCLUDED.trade_price,
+                        timestamp = EXCLUDED.timestamp,
                         candle_acc_trade_price = EXCLUDED.candle_acc_trade_price,
                         candle_acc_trade_volume = EXCLUDED.candle_acc_trade_volume,
                         unit = EXCLUDED.unit
@@ -521,6 +535,7 @@ async fn insert_candles(
                 .bind(high_price)
                 .bind(low_price)
                 .bind(trade_price)
+                .bind(timestamp)
                 .bind(candle_acc_trade_price)
                 .bind(candle_acc_trade_volume)
                 .bind(unit_val)
