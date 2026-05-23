@@ -26,14 +26,27 @@ pub async fn get_candles_days(
     to: &str,
     count: u32,
 ) -> Result<Vec<Value>, crate::error::AppError> {
-    let query = &[("market", market), ("to", to), ("count", &count.to_string())];
+    let query = &[
+        ("market", market),
+        ("count", &count.to_string()),
+        ("to", to),
+    ];
     let resp = rest.get("/v1/candles/days", query).await?;
     let value: Value = serde_json::from_str(&resp)?;
     if let Some(arr) = value.as_array() {
+        if let Some(first) = arr.first() {
+            tracing::info!(
+                market,
+                to,
+                count,
+                first_candle_date = %first["candle_date_time_utc"],
+                "CandlesDays API response first candle"
+            );
+        }
         Ok(arr.clone())
     } else if let Some(obj) = value.as_object() {
-        for (_, v) in obj {
-            if let Some(arr) = v.as_array() {
+        for &field in &["candles", "data", "market"] {
+            if let Some(arr) = obj.get(field).and_then(|v| v.as_array()) {
                 return Ok(arr.clone());
             }
         }

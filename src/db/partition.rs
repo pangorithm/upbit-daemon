@@ -22,36 +22,41 @@ pub async fn ensure_partitions(pool: &PgPool, config: &Config) -> Result<(), Box
             "trades" => PartitionKeyFormat::Trades,
             _ => PartitionKeyFormat::Candles,
         };
-        create_daily_partitions(pool, table, config.partition.create, &key_format).await;
+        create_daily_partitions(pool, table, config.partition.create, config.partition.retain_days, &key_format).await;
     }
     for table in &["candles_minutes", "candles_days"] {
         let key_format = PartitionKeyFormat::Candles;
-        create_monthly_partitions(pool, table, config.partition.create, &key_format).await;
+        create_monthly_partitions(pool, table, config.partition.create, config.partition.retain_months, &key_format).await;
     }
 
     info!("Partitions ensured");
     Ok(())
 }
 
-async fn create_daily_partitions(pool: &PgPool, table: &str, n: u32, key_format: &PartitionKeyFormat) {
+async fn create_daily_partitions(pool: &PgPool, table: &str, future_n: u32, retain_days: u32, key_format: &PartitionKeyFormat) {
     let last_date = get_last_partition_date(pool, table).await;
 
+    let today = chrono::Utc::now().naive_utc().date();
+
     let start = match last_date {
-        Some(d) => d.checked_add_days(Days::new(1)).unwrap(),
-        None => chrono::Utc::now().naive_utc().date(),
+        Some(d) => d.checked_sub_days(Days::new(retain_days as u64)).unwrap(),
+        None => today,
     };
 
-    let today = chrono::Utc::now().naive_utc().date();
     let start = std::cmp::min(start, today);
     let gap_days = (today - start).num_days() as u32;
 
     let mut count = 0u32;
+    let total_days = gap_days + future_n;
     let mut current = start;
-    while count < gap_days + n {
+    while count < total_days {
         let next = match current.checked_add_days(Days::new(1)) {
             Some(n) => n,
             None => break,
         };
+        if next > today.checked_add_days(Days::new(future_n as u64)).unwrap() {
+            break;
+        }
         let (from_str, to_str) = key_format.daily_bounds(&current, &next);
 
         let name = format!("{}_y{:04}m{:02}d{:02}", table, current.year(), current.month(), current.day());
@@ -65,33 +70,34 @@ async fn create_daily_partitions(pool: &PgPool, table: &str, n: u32, key_format:
     }
 }
 
-async fn create_monthly_partitions(pool: &PgPool, table: &str, n: u32, key_format: &PartitionKeyFormat) {
+async fn create_monthly_partitions(pool: &PgPool, table: &str, future_n: u32, retain_months: u32, key_format: &PartitionKeyFormat) {
     let last_date = get_last_partition_month(pool, table).await;
 
     let now = chrono::Utc::now().naive_utc().date();
+    let today_month = NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap();
 
-    let current_month = match last_date {
+    let start_month = match last_date {
         Some(d) => {
-            let next = d + Months::new(1);
-            NaiveDate::from_ymd_opt(next.year(), next.month(), 1).unwrap()
+            let start = d - Months::new(retain_months);
+            NaiveDate::from_ymd_opt(start.year(), start.month(), 1).unwrap()
         }
         None => NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap(),
     };
-    let today_month = NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap();
-    let current_month = std::cmp::min(current_month, today_month);
-    let gap_months = months_between(current_month, today_month);
+    let start_month = std::cmp::min(start_month, today_month);
+    let gap_months = months_between(start_month, today_month);
 
     let mut count = 0u32;
+    let total_months = gap_months + future_n;
     let mut month_idx = 0u32;
-    while count < gap_months + n {
-        let future = match current_month + Months::new(month_idx) {
-            d if d <= today_month || count < gap_months + n => d,
-            _ => break,
-        };
-        let next_month = future + Months::new(1);
-        let (from_str, to_str) = key_format.monthly_bounds(&future, &next_month);
+    while count < total_months {
+        let current = start_month + Months::new(month_idx);
+        if current > today_month + Months::new(future_n) {
+            break;
+        }
+        let next_month = current + Months::new(1);
+        let (from_str, to_str) = key_format.monthly_bounds(&current, &next_month);
 
-        let name = format!("{}_y{:04}m{:02}", table, future.year(), future.month());
+        let name = format!("{}_y{:04}m{:02}", table, current.year(), current.month());
         let sql = format!(
             "CREATE TABLE IF NOT EXISTS {} PARTITION OF {} FOR VALUES FROM ('{}') TO ('{}')",
             name, table, from_str, to_str

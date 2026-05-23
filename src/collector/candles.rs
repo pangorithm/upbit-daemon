@@ -76,8 +76,12 @@ pub async fn fill_candle_minutes_gap(
             let total_candles_needed = gap_minutes / numeric_unit;
             let mut remaining_candles = total_candles_needed;
 
-            let mut current_from = last
-                .parse::<chrono::DateTime<chrono::Utc>>()
+            let mut current_from = if last.ends_with('Z') {
+                chrono::DateTime::parse_from_rfc3339(&last).map(|dt| dt.with_timezone(&chrono::Utc))
+            } else {
+                chrono::NaiveDateTime::parse_from_str(&last, "%Y-%m-%dT%H:%M:%S")
+                    .map(|nt| nt.and_utc())
+            }
                 .expect("Failed to parse last_candle_time");
 
             while remaining_candles > 0 {
@@ -85,7 +89,7 @@ pub async fn fill_candle_minutes_gap(
                 let to_str = current_from
                     .checked_add_signed(Duration::minutes((batch_size * numeric_unit) as i64))
                     .expect("Time overflow")
-                    .format("%Y-%m-%dT%H:%M:%S+00:00")
+                    .format("%Y-%m-%dT%H:%M:%SZ")
                     .to_string();
                 queue.lock().await.push_back(ApiRequestDto::CandlesMinutes {
                     market: market.to_string(),
@@ -156,12 +160,12 @@ pub async fn fill_candle_days_gap(
             let queue = get_global_queue();
             let mut remaining_candles = diff_days as u32;
 
-            while remaining_candles > 0 {
+         while remaining_candles > 0 {
                 let batch_size = std::cmp::min(remaining_candles, config.candle.count);
                 let to_str = chrono::Utc::now()
                     .checked_add_signed(chrono::Duration::days(batch_size as i64))
                     .expect("Time overflow")
-                    .format("%Y-%m-%d")
+                    .format("%Y-%m-%dT00:00:00Z")
                     .to_string();
                 queue.lock().await.push_back(ApiRequestDto::CandlesDays {
                     market: market.to_string(),
@@ -182,11 +186,11 @@ pub async fn fill_candle_days_gap(
                 "No last candle found for days, fetching {} candles from current time",
                 config.candle.count
             );
-            let queue = get_global_queue();
+      let queue = get_global_queue();
             let to_str = chrono::Utc::now()
                 .checked_add_signed(chrono::Duration::days(1))
                 .expect("Time overflow")
-                .format("%Y-%m-%d")
+                .format("%Y-%m-%dT00:00:00Z")
                 .to_string();
             queue.lock().await.push_back(ApiRequestDto::CandlesDays {
                 market: market.to_string(),
@@ -413,10 +417,11 @@ fn calculate_gap_minutes(
 ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
     match last_candle_time {
         Some(time_str) => {
-            let last_time = chrono::DateTime::parse_from_rfc3339(&time_str)
+            let naive_time = chrono::NaiveDateTime::parse_from_str(time_str, "%Y-%m-%dT%H:%M:%S")
                 .map_err(|e| format!("Failed to parse time '{}': {}", time_str, e))?;
+            let last_time = naive_time.and_utc();
             let now = chrono::Utc::now();
-            let diff = now - last_time.with_timezone(&chrono::Utc);
+            let diff = now - last_time;
             let minutes = diff.num_minutes();
             if minutes < 0 {
                 Ok(0)
@@ -494,10 +499,9 @@ async fn insert_candles(
                 .execute(pool)
                 .await
                 .map_err(|e| {
-                    error!(
-                        table,
-                        error = e.to_string(),
+                    tracing::warn!(
                         market,
+                        candle_date_time_utc = %candle_date_time_utc,
                         "Failed to insert candle to candles_days"
                     );
                     e
