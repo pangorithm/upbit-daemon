@@ -59,7 +59,7 @@ async fn create_daily_partitions(pool: &PgPool, table: &str, n: u32, key_format:
             "CREATE TABLE IF NOT EXISTS {} PARTITION OF {} FOR VALUES FROM ('{}') TO ('{}')",
             name, table, from_str, to_str
         );
-        create_partition(pool, table, &sql).await;
+        create_partition(pool, table, &name, &sql).await;
         count += 1;
         current = next;
     }
@@ -78,6 +78,7 @@ async fn create_monthly_partitions(pool: &PgPool, table: &str, n: u32, key_forma
         None => NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap(),
     };
     let today_month = NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap();
+    let current_month = std::cmp::min(current_month, today_month);
     let gap_months = months_between(current_month, today_month);
 
     let mut count = 0u32;
@@ -95,7 +96,7 @@ async fn create_monthly_partitions(pool: &PgPool, table: &str, n: u32, key_forma
             "CREATE TABLE IF NOT EXISTS {} PARTITION OF {} FOR VALUES FROM ('{}') TO ('{}')",
             name, table, from_str, to_str
         );
-        create_partition(pool, table, &sql).await;
+        create_partition(pool, table, &name, &sql).await;
         count += 1;
         month_idx += 1;
     }
@@ -209,20 +210,28 @@ fn extract_month_from_partition_name(name: &str) -> Option<NaiveDate> {
     NaiveDate::from_ymd_opt(year, month, 1)
 }
 
-async fn create_partition(pool: &PgPool, table_name: &str, sql: &str) {
-    if let Err(e) = sqlx::query(sql).execute(pool).await {
-        let err_str = e.to_string();
-        if err_str.contains("would overlap") {
-            info!(table = table_name, sql = %sql, "Skipping partition (already exists)");
-        } else {
-            warn!(table = table_name, error = %e, "Failed to create partition");
+async fn create_partition(pool: &PgPool, table_name: &str, partition_name: &str, sql: &str) {
+    let exists = sqlx::query(
+        r#"SELECT 1 FROM pg_class WHERE relname = $1"#,
+    )
+    .bind(partition_name)
+    .fetch_one(pool)
+    .await;
+
+    if exists.is_ok() {
+        info!(table = table_name, partition = partition_name, "Skipping partition (already exists)");
+        return;
+    }
+
+    match sqlx::query(sql).execute(pool).await {
+        Ok(_) => info!("Created partition for {} ({})", table_name, partition_name),
+        Err(e) => {
+            let err_str = e.to_string();
+            if err_str.contains("would overlap") {
+                info!(table = table_name, partition = partition_name, "Skipping partition (would overlap)");
+            } else {
+                warn!(table = table_name, error = %e, "Failed to create partition");
+            }
         }
-    } else {
-        let partition_name = sql
-            .split("CREATE TABLE IF NOT EXISTS ")
-            .nth(1)
-            .and_then(|s| s.split(" PARTITION OF ").next())
-            .unwrap_or("unknown");
-        info!("Created partition for {} ({})", table_name, partition_name);
     }
 }
