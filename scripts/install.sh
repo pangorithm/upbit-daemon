@@ -32,7 +32,7 @@ fi
 sudo chown -R ${USER}:${USER} ${INSTALL_DIR}
 
 # Install systemd service
-sudo cp systemd/${SERVICE_NAME}.service /etc/systemd/system/
+sudo cp -n systemd/${SERVICE_NAME}.service /etc/systemd/system/
 sudo systemctl daemon-reload
 
 echo ""
