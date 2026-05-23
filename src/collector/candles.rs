@@ -113,9 +113,7 @@ pub async fn fill_candle_minutes_gap(
             );
             let queue = get_global_queue();
             let now = chrono::Utc::now();
-            let to_str = now
-                .format("%Y-%m-%dT%H:%M:%S+00:00")
-                .to_string();
+            let to_str = now.format("%Y-%m-%dT%H:%M:%S+00:00").to_string();
             queue.lock().await.push_back(ApiRequestDto::CandlesMinutes {
                 market: market.to_string(),
                 count: config.candle.count,
@@ -141,12 +139,7 @@ pub async fn fill_candle_days_gap(
     match last_candle_date {
         Some(last) => {
             let last_time = chrono::NaiveDateTime::parse_from_str(&last, "%Y-%m-%dT%H:%M:%S")
-                .map_err(|e| {
-                format!(
-                    "Failed to parse last candle time '{}': {}",
-                    last, e
-                )
-            })?;
+                .map_err(|e| format!("Failed to parse last candle time '{}': {}", last, e))?;
             let now = chrono::Utc::now().naive_utc();
             let diff_days = (now - last_time).num_days();
 
@@ -223,7 +216,10 @@ pub async fn fill_all_candle_gaps(
         .collect();
 
     let markets: Vec<&String> = match &config.candle.market_prefix {
-        Some(prefix) => all_markets.iter().filter(|m| m.starts_with(prefix)).collect(),
+        Some(prefix) => all_markets
+            .iter()
+            .filter(|m| m.starts_with(prefix))
+            .collect(),
         None => all_markets.iter().collect(),
     };
 
@@ -364,7 +360,7 @@ fn start_background_task(
             }))
         })
         .clone()
-    }
+}
 
 async fn get_last_candle_time(
     pool: &PgPool,
@@ -558,11 +554,15 @@ async fn insert_candles(
     Ok(())
 }
 
-pub async fn run_gap_filling(
-    pool: &PgPool,
-    rest: &crate::api::rest::RestClient,
-    config: &Config,
-) {
+struct GapFillingGuard<'a>(&'a AtomicBool);
+
+impl<'a> Drop for GapFillingGuard<'a> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+pub async fn run_gap_filling(pool: &PgPool, rest: &crate::api::rest::RestClient, config: &Config) {
     info!("Starting candle gap-filling");
 
     let running = AtomicBool::new(false);
@@ -578,7 +578,11 @@ pub async fn run_gap_filling(
         );
         tokio::time::sleep_until(next).await;
 
-        if running.compare_exchange(false, true, Ordering::AcqRel, Ordering::AcqRel).is_ok() {
+        if running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let _guard = GapFillingGuard(&running); // 작업 완료/패닉 시 자동으로 running을 false로 변경
             if let Err(e) = fill_all_candle_gaps(pool, rest, config).await {
                 error!("Candle gap-filling failed: {}", e);
             }

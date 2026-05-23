@@ -108,17 +108,6 @@ CREATE TABLE candles_days (
 
 CREATE TABLE candles_days_y2026m01 PARTITION OF candles_days FOR VALUES FROM ('2026-01-01T00:00:00') TO ('2026-02-01T00:00:00');
 
-CREATE TABLE orderbooks (
-    market VARCHAR(30) NOT NULL,
-    timestamp BIGINT NOT NULL,
-    total_ask_size DOUBLE PRECISION NOT NULL,
-    total_bid_size DOUBLE PRECISION NOT NULL,
-    orderbook_units JSONB NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-CREATE INDEX idx_candles_seconds_market ON candles_seconds(market, candle_date_time_utc);
-CREATE INDEX idx_candles_minutes_market ON candles_minutes(market, candle_date_time_utc);
-CREATE INDEX idx_candles_minutes_unit ON candles_minutes(market, candle_date_time_utc, unit);
-CREATE INDEX idx_candles_days_market ON candles_days(market, candle_date_time_utc);
-CREATE INDEX idx_orderbooks_market ON orderbooks(market);
-CREATE INDEX idx_orderbooks_timestamp ON orderbooks(timestamp);
+CREATE UNIQUE INDEX idx_candles_seconds_market ON candles_seconds(market, candle_date_time_utc);
+CREATE UNIQUE INDEX idx_candles_minutes_market ON candles_minutes(market, candle_date_time_utc, unit);
+CREATE UNIQUE INDEX idx_candles_days_market ON candles_days(market, candle_date_time_utc);

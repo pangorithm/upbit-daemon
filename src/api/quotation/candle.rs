@@ -28,7 +28,19 @@ pub async fn get_candles_days(
 ) -> Result<Vec<Value>, crate::error::AppError> {
     let query = &[("market", market), ("to", to), ("count", &count.to_string())];
     let resp = rest.get("/v1/candles/days", query).await?;
-    Ok(serde_json::from_str(&resp)?)
+    let value: Value = serde_json::from_str(&resp)?;
+    if let Some(arr) = value.as_array() {
+        Ok(arr.clone())
+    } else if let Some(obj) = value.as_object() {
+        for (_, v) in obj {
+            if let Some(arr) = v.as_array() {
+                return Ok(arr.clone());
+            }
+        }
+        Ok(vec![])
+    } else {
+        Ok(vec![])
+    }
 }
 
 /// Strip 'm' suffix for API request (e.g., "10m" → "10")
