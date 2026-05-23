@@ -33,20 +33,23 @@ upbit-daemon/
 │   │   ├── mod.rs           # DB 연결, Pool 관리
 │   │   ├── init.rs          # 테이블 존재 확인, 마이그레이션, 파티션 gap-filling
 │   │   └── partition.rs     # 미래 파티션 생성
-│   ├── api/
+│   ├── auth.rs              # JWT 생성 (REST + WebSocket 공통)
+├── api/
 │   │   ├── mod.rs           # 모듈 export
-│   │   ├── auth.rs          # JWT 생성 (REST + WebSocket)
 │   │   ├── quotation/
 │   │   │   ├── mod.rs
 │   │   │   ├── candle.rs    # 시세 조회 - 초/분/일 캔들 REST
 │   │   │   └── market.rs    # 페어 목록 조회 REST
-│   │   ├── rest.rs          # REST API 호출 (reqwest, JWT bearer)
-│   │   └── websocket.rs     # WebSocket 연결/송수신
+│   │   └── rest.rs          # REST API 호출 (reqwest, JWT bearer)
+├── ws/
+│   │   ├── mod.rs           # 모듈 export
+│   │   ├── client.rs        # WebSocket 연결/송수신/keepalive
+│   │   ├── session.rs       # WS 세션 (연결→구독→메시지→재연결)
+│   │   └── handler.rs       # 메시지 핸들러
 │   ├── collector/
 │   │   ├── mod.rs           # 모듈 export
 │   │   ├── candles.rs       # 캔들 gap-filling (REST 조회 + DB 저장)
-│   │   ├── parsers.rs       # WebSocket 메시지 파싱 (candle/ticker/trade/orderbook)
-│   │   └── subscriptions.rs # WebSocket 구독 메시지 생성
+│   │   └── parsers.rs       # WebSocket 메시지 파싱 (candle/ticker/trade/orderbook)
 │   └── cron/
 │       ├── mod.rs                 # 모듈 export
 │       ├── market_refresh.rs      # 페어 목록 갱신 (10분 cron)
@@ -76,18 +79,21 @@ candle:
   market_prefix: "KRW-"       # 수집할 페어 필터링 (예: "KRW-" → KRW 페어만)
   units: [1m, 10m, 60m, 1d]  # REST API gap-filling할 캔들 시간 단위
   count: 200                  # REST 캔들 조회 시 count 파라미터 (최대 200)
-  seconds:
-    markets: [KRW-BTC]       # 1s 캔들 WebSocket 구독할 페어 (빈 배열 = 구독 안 함, gap-filling 없음)
 rate_limit:
   api_calls_per_second: 5
+subscribe:
+  candle: [KRW-BTC]          # 1s 캔들 WebSocket 구독할 페어 (빈 배열 = 구독 안 함)
+  ticker: [KRW-BTC, KRW-ETH] # ticker WebSocket 구독 (빈 배열 = 구독 안 함)
+  trade: [KRW-BTC, KRW-ETH]  # trade WebSocket 구독 (빈 배열 = 구독 안 함)
+  orderbook: [KRW-BTC, KRW-ETH]  # orderbook WebSocket 구독 (빈 배열 = 구독 안 함)
 partition:
   retain_days: 10              # 일 단위 파티션 유지일수
   retain_months: 6             # 월 단위 파티션 유지개월수
   create: 3                    # 미리 생성할 미래 파티션 개수
 cron:
   candle: "*/10 * * * *"       # 캔들 gap-filling cron
-  market: "*/10 * * * *"       # 페어 목록 갱신 cron
-  subscribe: "*/10 * * * *"    # WebSocket 구독 갱신 cron
+  market: "0 0 * * *"          # 페어 목록 갱신 cron
+  subscribe: "0 0 * * *"       # WebSocket 구독 갱신 cron
 ```
 
 ## 데이터 모델
@@ -172,12 +178,12 @@ DB 컬럼명은 REST API 응답 필드명을 기준으로 매핑합니다. WebSo
 - REST API 응답 데이터를 DB에 `UPSERT` (`INSERT ... ON CONFLICT DO UPDATE`)
 - 마지막 캔들이 없는 경우 (최초 실행): 마지막 캔들 시간을 (현재시간 - `unit` * `candle.count`) 으로 가정 후 gap-filling
 
-### 9. 1s 캔들 WebSocket 구독
-- `config.yaml`의 `candle.seconds.markets`에 명시된 페어만 1s 캔들 WebSocket 구독 (전체 markets 아님)
-- 프로그램 시작 시 명시된 페어에 대해 `candle.1s` 구독
-- 구독 중인 스트림 목록은 WebSocket `LIST_SUBSCRIPTIONS` 메서드로 조회 가능
+### 9. WebSocket 구독 (ticker, trade, orderbook, candle.1s)
+- `config.yaml`의 `subscribe` 하위 항목별로 WebSocket 구독 (candle, ticker, trade, orderbook)
+- candle.1s: `subscribe.candle`에 명시된 페어만 구독
+- ticker/trade/orderbook: 각각 해당 항목에 명시된 페어 구독 (빈 배열 = 구독 안 함)
+- 신규 페어 추가 시 `cron.subscribe` 크론식 기반 간격으로 자동 구독
 - WebSocket 연결 끊김 시 자동 재연결 로직 포함
-- 신규 페어 발생 시 `cron.subscribe` 크론식 기반 간격으로 자동 구독
 - `1s` 캔들은 gap-filling 하지 않음 (WebSocket 실시간 수신만)
 
 ### 10. 실시간 수신 데이터 DB Upsert

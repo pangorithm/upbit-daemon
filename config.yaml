@@ -5,8 +5,11 @@ candle:
   market_prefix: "KRW-"
   units: [1m, 10m, 60m, 1d]
   count: 200
-  seconds:
-    markets: []
+subscribe:
+  candle: [KRW-BTC]
+  ticker: [KRW-BTC, KRW-ETH]
+  trade: [KRW-BTC, KRW-ETH]
+  orderbook: [KRW-BTC, KRW-ETH]
 rate_limit:
   api_calls_per_second: 5
 partition:

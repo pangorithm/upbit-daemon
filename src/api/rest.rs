@@ -1,7 +1,6 @@
-use super::auth;
+use crate::auth;
 use reqwest::Client;
 
-/// HTTP client wrapper for Upbit REST API with JWT authentication
 #[derive(Clone)]
 pub struct RestClient {
     client: Client,
@@ -11,7 +10,6 @@ pub struct RestClient {
 }
 
 impl RestClient {
-    /// Create a new RestClient with base URL and API credentials
     pub fn new(base_url: &str, access_key: Option<String>, secret_key: Option<String>) -> Self {
         Self {
             client: Client::new(),
@@ -21,7 +19,6 @@ impl RestClient {
         }
     }
 
-    /// Send GET request with JWT auth. Builds query string from params and signs with HMAC-SHA512
     pub async fn get(&self, path: &str, query: &[(&str, &str)]) -> Result<String, crate::error::AppError> {
         let access_key = self.access_key.as_deref().unwrap_or("");
         let secret_key = self.secret_key.as_deref().unwrap_or("");
@@ -32,7 +29,7 @@ impl RestClient {
         Ok(resp.text().await?)
     }
 
-    /// Send POST request with JWT auth. Converts body to query string for HMAC-SHA512 signing
+    #[allow(dead_code)]
     pub async fn post(&self, path: &str, body: &serde_json::Value) -> Result<String, crate::error::AppError> {
         let access_key = self.access_key.as_deref().unwrap_or("");
         let secret_key = self.secret_key.as_deref().unwrap_or("");
@@ -43,7 +40,7 @@ impl RestClient {
         Ok(resp.text().await?)
     }
 
-    /// Send DELETE request with JWT auth. Builds query string and signs with HMAC-SHA512
+    #[allow(dead_code)]
     pub async fn delete(&self, path: &str, query: &[(&str, &str)]) -> Result<String, crate::error::AppError> {
         let access_key = self.access_key.as_deref().unwrap_or("");
         let secret_key = self.secret_key.as_deref().unwrap_or("");

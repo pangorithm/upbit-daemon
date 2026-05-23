@@ -50,7 +50,6 @@ pub async fn init_database(pool: &PgPool) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-/// Check if required tables exist; create them from migration SQL if missing
 async fn ensure_tables_exist(pool: &PgPool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let tables = ["markets", "tickers", "trades", "candles_seconds", "candles_minutes", "candles_days", "orderbooks"];
     let existing = sqlx::query_scalar::<_, String>(
@@ -65,14 +64,23 @@ async fn ensure_tables_exist(pool: &PgPool) -> Result<(), Box<dyn std::error::Er
     }
 
     warn!("Missing tables: {:?}", missing);
-    let sql = std::fs::read_to_string("migrations/001_initial.sql")?;
-    for statement in sql.split(';') {
-        let stmt = statement.trim();
-        if !stmt.is_empty() {
-            sqlx::query(stmt).execute(pool).await?;
+
+    for table in &missing {
+        let sql = std::fs::read_to_string("migrations/001_initial.sql")?;
+        for statement in sql.split(';') {
+            let stmt = statement.trim();
+            if !stmt.is_empty() {
+                if stmt.contains(format!("CREATE TABLE {}", table).as_str()) {
+                    if let Err(e) = sqlx::query(stmt).execute(pool).await {
+                        error!(table = %table, error = %e, "Failed to create table");
+                    } else {
+                        info!("Created table: {}", table);
+                    }
+                }
+            }
         }
     }
-    info!("Executed migrations, created tables");
+    info!("Database initialization completed");
     Ok(())
 }
 

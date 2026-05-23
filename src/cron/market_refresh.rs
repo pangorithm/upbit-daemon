@@ -4,7 +4,7 @@ use crate::config::Config;
 use crate::api::rest::RestClient;
 
 pub async fn run_market_refresh(pool: &PgPool, rest: &RestClient, config: &Config) {
-    info!("Starting market refresh");
+    info!("Starting market refresh (cron.market interval)");
 
     loop {
         let next = crate::cron::interval::next_cron_instant(

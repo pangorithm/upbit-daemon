@@ -2,20 +2,79 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
+use serde_json::json;
 use sqlx::PgPool;
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 
-use crate::api::websocket::WebSocketClient;
+use super::client::WebSocketClient;
 use crate::collector;
 use crate::config;
 use crate::cron;
 
-static SUBSCRIBED_UNITS: OnceLock<std::sync::Mutex<HashSet<String>>> = OnceLock::new();
+static SUBSCRIBED_MARKETS: OnceLock<std::sync::Mutex<HashSet<String>>> = OnceLock::new();
 
-pub(super) fn get_subscribed_units() -> &'static std::sync::Mutex<HashSet<String>> {
-    SUBSCRIBED_UNITS.get_or_init(|| std::sync::Mutex::new(HashSet::new()))
+pub(super) fn get_subscribed_markets() -> &'static std::sync::Mutex<HashSet<String>> {
+    SUBSCRIBED_MARKETS.get_or_init(|| std::sync::Mutex::new(HashSet::new()))
+}
+
+async fn subscribe_markets(
+    ws: &WebSocketClient,
+    type_name: &str,
+    markets: &[String],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if markets.is_empty() {
+        return Ok(());
+    }
+
+    for chunk in markets.chunks(10) {
+        let msg = json!([
+            {"ticket": uuid::Uuid::new_v4().to_string()},
+            {
+                "type": format!("candle.{}", type_name),
+                "codes": chunk
+            },
+            {"format": "DEFAULT"}
+        ]);
+        ws.send(Message::Text(msg.to_string().into())).await?;
+    }
+    Ok(())
+}
+
+async fn subscribe_new_markets(
+    ws: &WebSocketClient,
+    type_name: &str,
+    markets: &[String],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if markets.is_empty() {
+        return Ok(());
+    }
+
+    let msg = json!([
+        {"ticket": uuid::Uuid::new_v4().to_string()},
+        {
+            "type": format!("candle.{}", type_name),
+            "codes": markets
+        },
+        {"format": "DEFAULT"}
+    ]);
+    ws.send(Message::Text(msg.to_string().into())).await?;
+    Ok(())
+}
+
+pub(super) fn find_and_subscribe_new(
+    _ws: &WebSocketClient,
+    _type_name: &str,
+    config: &config::Config,
+    subscribed_list: &[String],
+) -> Vec<String> {
+    let prefix = &config.candle.market_prefix;
+    subscribed_list
+        .iter()
+        .filter(|m| matches_prefix(m, prefix))
+        .cloned()
+        .collect()
 }
 
 fn matches_prefix(market: &str, prefix: &Option<String>) -> bool {
@@ -25,49 +84,23 @@ fn matches_prefix(market: &str, prefix: &Option<String>) -> bool {
     }
 }
 
-pub(super) async fn find_and_subscribe_new(
-    pool: &PgPool,
+async fn refresh_subscriptions(
     ws: &WebSocketClient,
     config: &config::Config,
-    subscribed: &HashSet<String>,
-) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
-    let db_markets = crate::db::markets::fetch_all_markets(pool).await?;
-
-    let new_markets: Vec<String> = db_markets
+    subscribed_list: &[String],
+    type_name: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let prefix = &config.candle.market_prefix;
+    let markets_to_subscribe: Vec<String> = subscribed_list
         .iter()
-        .filter(|m| !subscribed.contains(m.as_str()))
+        .filter(|m| matches_prefix(m, prefix))
         .cloned()
         .collect();
 
-    let filtered: Vec<String> = new_markets
-        .into_iter()
-        .filter(|m| matches_prefix(&m, &config.candle.market_prefix))
-        .collect();
-
-    for market in &filtered {
-        if let Err(e) = collector::subscriptions::subscribe_new_market(ws, config, market).await {
-            error!("Failed to subscribe new market {}: {}", market, e);
-        }
+    for market in &markets_to_subscribe {
+        subscribe_new_markets(ws, type_name, &[market.clone()]).await.ok();
     }
 
-    Ok(filtered)
-}
-
-async fn refresh_candle_subscriptions(
-    pool: &PgPool,
-    ws: &WebSocketClient,
-    config: &config::Config,
-    subscribed_units: &'static std::sync::Mutex<HashSet<String>>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let subscribed: HashSet<String> = subscribed_units.lock().unwrap().iter().cloned().collect();
-    let filtered = find_and_subscribe_new(pool, ws, config, &subscribed).await?;
-    if !filtered.is_empty() {
-        let mut lock = subscribed_units.lock().unwrap();
-        for market in &filtered {
-            lock.insert(market.clone());
-        }
-    }
-    info!("Subscribed to {} new markets", filtered.len());
     Ok(())
 }
 
@@ -89,8 +122,7 @@ pub async fn run_ws_session(
     };
     info!("WebSocket connected ({})", label);
 
-    let subscribed_units = get_subscribed_units();
-    info!("Previously subscribed units: {:?}", subscribed_units.lock().unwrap());
+    let subscribed_markets = get_subscribed_markets();
 
     let msg_count = Arc::new(AtomicU64::new(0));
     {
@@ -107,30 +139,13 @@ pub async fn run_ws_session(
         });
     }
 
-   let new_units: Vec<&String> = ws_config.candle.units.iter()
-        .filter(|u| !subscribed_units.lock().unwrap().contains(u.as_str()))
-        .collect();
+subscribe_candle(&ws, &ws_config).await;
+    subscribe_ticker(&ws, &ws_config).await;
+    subscribe_trade(&ws, &ws_config).await;
+    subscribe_orderbook(&ws, &ws_config).await;
 
-    if new_units.is_empty() {
-        info!("All units already subscribed, skipping initial subscription");
-    } else {
-        match collector::subscriptions::subscribe_markets(&ws_pool, &ws, &ws_config, &new_units).await {
-            Ok(subscribed) => {
-                info!("Successfully subscribed units: {:?}", subscribed);
-                let mut lock = subscribed_units.lock().unwrap();
-                for unit in subscribed {
-                    lock.insert(unit);
-                }
-            }
-            Err(e) => {
-                error!("Failed to subscribe markets: {}", e);
-            }
-        }
-    }
-
-     let (refresh_cancel_tx, mut refresh_cancel_rx) = watch::channel(());
+    let (refresh_cancel_tx, mut refresh_cancel_rx) = watch::channel(());
     let ws_clone = ws.clone();
-    let pool_clone = ws_pool.clone();
     let config_clone = ws_config.clone();
     let refresh_handle = tokio::spawn(async move {
         loop {
@@ -140,7 +155,7 @@ pub async fn run_ws_session(
             );
             tokio::select! {
                 _ = tokio::time::sleep_until(next) => {
-                    if let Err(e) = refresh_candle_subscriptions(&pool_clone, &ws_clone, &config_clone, &subscribed_units).await {
+                    if let Err(e) = refresh_all_subscriptions(&ws_clone, &config_clone).await {
                         error!("Subscription refresh failed: {}", e);
                     }
                 }
@@ -151,10 +166,10 @@ pub async fn run_ws_session(
         }
     });
 
-     let (keepalive_tx, mut keepalive_rx) = mpsc::channel::<()>(1);
+    let (keepalive_tx, mut keepalive_rx) = mpsc::channel::<()>(1);
     let keepalive_handle = ws.keepalive(keepalive_tx.clone());
 
-     loop {
+    loop {
         tokio::select! {
             biased;
 
@@ -171,7 +186,7 @@ pub async fn run_ws_session(
                                                 .map_or(false, |t| t == "LIST_SUBSCRIPTIONS")
                                         })
                                     }) {
-                                        if let Err(e) = super::handler::handle_subscription_update(&ws_pool, &ws, &ws_config, &parsed, &subscribed_units).await {
+                                        if let Err(e) = super::handler::handle_subscription_update(&ws_pool, &ws, &ws_config, &parsed, &subscribed_markets).await {
                                             error!("Failed to handle subscription update: {}", e);
                                         }
                                     } else {
@@ -213,4 +228,79 @@ pub async fn run_ws_session(
 
     refresh_cancel_tx.send(()).ok();
     let _ = refresh_handle.await;
+}
+
+async fn subscribe_candle(ws: &WebSocketClient, config: &config::Config) {
+    if config.subscribe.candle.is_empty() {
+        return;
+    }
+    info!("Subscribing to candle for {} markets", config.subscribe.candle.len());
+    for chunk in config.subscribe.candle.iter() {
+        let msg = json!([
+            {"ticket": uuid::Uuid::new_v4().to_string()},
+            {
+                "type": "candle.1s",
+                "codes": [chunk.as_str()]
+            },
+            {"format": "DEFAULT"}
+        ]);
+        if let Err(e) = ws.send(Message::Text(msg.to_string().into())).await {
+            error!("Failed to subscribe candle for {}: {}", chunk, e);
+        } else {
+            let mut lock = get_subscribed_markets().lock().unwrap();
+            lock.insert(chunk.clone());
+        }
+    }
+}
+
+async fn subscribe_ticker(ws: &WebSocketClient, config: &config::Config) {
+    if config.subscribe.ticker.is_empty() {
+        return;
+    }
+    info!("Subscribing to ticker for {} markets", config.subscribe.ticker.len());
+    subscribe_markets(ws, "ticker", &config.subscribe.ticker).await.ok();
+    for market in &config.subscribe.ticker {
+        if matches_prefix(market, &config.candle.market_prefix) {
+            let mut lock = get_subscribed_markets().lock().unwrap();
+            lock.insert(market.clone());
+        }
+    }
+}
+
+async fn subscribe_trade(ws: &WebSocketClient, config: &config::Config) {
+    if config.subscribe.trade.is_empty() {
+        return;
+    }
+    info!("Subscribing to trade for {} markets", config.subscribe.trade.len());
+    subscribe_markets(ws, "trade", &config.subscribe.trade).await.ok();
+    for market in &config.subscribe.trade {
+        if matches_prefix(market, &config.candle.market_prefix) {
+            let mut lock = get_subscribed_markets().lock().unwrap();
+            lock.insert(market.clone());
+        }
+    }
+}
+
+async fn subscribe_orderbook(ws: &WebSocketClient, config: &config::Config) {
+    if config.subscribe.orderbook.is_empty() {
+        return;
+    }
+    info!("Subscribing to orderbook for {} markets", config.subscribe.orderbook.len());
+    subscribe_markets(ws, "orderbook", &config.subscribe.orderbook).await.ok();
+    for market in &config.subscribe.orderbook {
+        if matches_prefix(market, &config.candle.market_prefix) {
+            let mut lock = get_subscribed_markets().lock().unwrap();
+            lock.insert(market.clone());
+        }
+    }
+}
+
+async fn refresh_all_subscriptions(
+    ws: &WebSocketClient,
+    config: &config::Config,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    refresh_subscriptions(ws, config, &config.subscribe.ticker, "ticker").await?;
+    refresh_subscriptions(ws, config, &config.subscribe.trade, "trade").await?;
+    refresh_subscriptions(ws, config, &config.subscribe.orderbook, "orderbook").await?;
+    Ok(())
 }

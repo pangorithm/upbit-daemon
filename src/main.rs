@@ -1,4 +1,5 @@
 mod api;
+mod auth;
 mod collector;
 mod config;
 mod cron;

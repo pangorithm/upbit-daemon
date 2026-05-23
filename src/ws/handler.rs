@@ -3,37 +3,35 @@ use std::collections::HashSet;
 use sqlx::PgPool;
 use tracing::info;
 
-use crate::api::websocket::WebSocketClient;
+use crate::ws::client::WebSocketClient;
 use crate::config;
 
 use super::session::find_and_subscribe_new;
 
 pub async fn handle_subscription_update(
-    pool: &PgPool,
-    ws: &WebSocketClient,
+    _pool: &PgPool,
+    _ws: &WebSocketClient,
     config: &config::Config,
-    msg: &serde_json::Value,
-    subscribed_units: &'static std::sync::Mutex<HashSet<String>>,
+    _msg: &serde_json::Value,
+    subscribed_markets: &'static std::sync::Mutex<HashSet<String>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let subscribed_codes = msg.as_array().and_then(|arr| {
-        arr.iter().find_map(|item| {
-            item.get("codes").and_then(|codes| codes.as_array())
-                .map(|c| c.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>())
-        })
-    });
+    let candle_markets = find_and_subscribe_new(_ws, "1s", config, &config.subscribe.candle);
+    let ticker_markets = find_and_subscribe_new(_ws, "ticker", config, &config.subscribe.ticker);
+    let trade_markets = find_and_subscribe_new(_ws, "trade", config, &config.subscribe.trade);
+    let orderbook_markets = find_and_subscribe_new(_ws, "orderbook", config, &config.subscribe.orderbook);
 
-    let subscribed: HashSet<String> = match subscribed_codes {
-        Some(codes) => codes.into_iter().collect(),
-        None => std::collections::HashSet::new(),
-    };
-
-    let filtered = find_and_subscribe_new(pool, ws, config, &subscribed).await?;
-    if !filtered.is_empty() {
-        info!("Found {} new markets, subscribing...", filtered.len());
-        let mut lock = subscribed_units.lock().unwrap();
-        for market in &filtered {
-            lock.insert(market.clone());
-        }
+    let mut lock = subscribed_markets.lock().unwrap();
+    for market in &candle_markets {
+        lock.insert(market.clone());
+    }
+    for market in &ticker_markets {
+        lock.insert(market.clone());
+    }
+    for market in &trade_markets {
+        lock.insert(market.clone());
+    }
+    for market in &orderbook_markets {
+        lock.insert(market.clone());
     }
 
     Ok(())

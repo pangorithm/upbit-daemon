@@ -1,9 +1,6 @@
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use uuid::Uuid;
 
-/// Create JWT token for Upbit REST API authentication
-/// - `query_string`: request query/body for HMAC signature. If provided, includes `query_hash` + `query_hash_alg` in payload.
-/// - Returns a Base64-encoded JWT signed with HS512 using the secret key.
 pub fn create_jwt(access_key: &str, secret_key: &str, query_string: Option<&str>) -> String {
     let mut payload = serde_json::Map::new();
     payload.insert("access_key".to_string(), serde_json::Value::String(access_key.to_string()));
@@ -26,12 +23,10 @@ pub fn create_jwt(access_key: &str, secret_key: &str, query_string: Option<&str>
     encode(&header, &payload, &EncodingKey::from_secret(secret_key.as_bytes())).unwrap()
 }
 
-/// Create JWT for WebSocket authentication (no query_hash needed)
 pub fn create_ws_jwt(access_key: &str, secret_key: &str) -> String {
     create_jwt(access_key, secret_key, None)
 }
 
-/// Build query string from key-value pairs for JWT signature (e.g. `market=KRW-BTC&count=200`)
 pub fn query_string(params: &[(&str, &str)]) -> String {
     params
         .iter()
@@ -40,7 +35,7 @@ pub fn query_string(params: &[(&str, &str)]) -> String {
         .join("&")
 }
 
-/// Convert POST body (JSON object) to query string format for JWT signature
+#[allow(dead_code)]
 pub fn body_to_query_string(body: &serde_json::Value) -> String {
     if let Some(obj) = body.as_object() {
         obj.iter()
@@ -92,7 +87,6 @@ mod tests {
         assert!(payload_val["query_hash"].is_string());
         assert_eq!(payload_val["query_hash_alg"], "SHA512");
 
-        // Verify query_hash is SHA512 of the query string
         use sha2::{Digest, Sha512};
         let expected_hash = hex::encode(Sha512::digest("market=KRW-BTC&side=bid"));
         assert_eq!(payload_val["query_hash"], expected_hash);
@@ -169,7 +163,6 @@ mod tests {
         );
 
         let (mut stream, _) = tokio_tungstenite::connect_async(request).await.expect("WebSocket connect failed");
-        println!("WebSocket connected");
 
         let query = serde_json::json!([
             {
@@ -178,7 +171,6 @@ mod tests {
             }
         ]);
         stream.send(Message::Text(query.to_string().into())).await.expect("Send failed");
-        println!("Sent subscription: MyAsset for KRW, BTC");
 
         loop {
             let msg = stream.next().await.expect("Stream ended");

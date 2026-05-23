@@ -1,4 +1,4 @@
-use super::auth;
+use crate::auth;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
