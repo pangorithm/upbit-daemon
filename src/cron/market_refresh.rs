@@ -5,7 +5,7 @@ use crate::config::Config;
 use crate::api::rest::RestClient;
 
 pub async fn run_market_refresh(pool: &PgPool, rest: &RestClient, config: &Config) {
-    info!("Starting market refresh cron (10min interval)");
+    info!("Starting market refresh");
 
     let interval = interval(std::time::Duration::from_secs(10 * 60));
     tokio::pin!(interval);
@@ -18,10 +18,10 @@ pub async fn run_market_refresh(pool: &PgPool, rest: &RestClient, config: &Confi
     }
 }
 
-async fn run_once(pool: &PgPool, rest: &RestClient, _config: &Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn run_once(pool: &PgPool, rest: &RestClient, config: &Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Running market refresh");
 
-    if let Err(e) = crate::api::quotation::market::fetch_and_upsert_markets(pool, rest).await {
+    if let Err(e) = crate::api::quotation::market::fetch_and_upsert_markets(pool, rest, &config.candle.market_prefix).await {
         error!("Failed to fetch markets: {}", e);
         return Err(e);
     }

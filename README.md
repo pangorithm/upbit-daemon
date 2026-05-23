@@ -157,14 +157,14 @@ DB 컬럼명은 REST API 응답 필드명을 기준으로 매핑합니다. WebSo
 
 ### 7. 페어 목록 조회
 - REST API (`/v1/markets`) 로 업비트 전체 페어 목록 조회
-- **프로그램 시작 시 1회** 및 **Cron으로 10분 1회** (`cron.candle` 설정 참조) 실행
-- `markets` 테이블에 `UPSERT` (동시성 처리: `ON CONFLICT DO UPDATE`)
+- **프로그램 시작 시 1회** 및 **Cron으로 10분 1회** 실행
+- `candle.market_prefix`으로 필터링 후 `markets` 테이블에 `UPSERT` (동시성 처리: `ON CONFLICT DO UPDATE`)
   - 신규 페어 추가 / 기존 페어 정보 업데이트
 
 ### 8. REST API 캔들 gap-filling
 - `markets` 테이블에서 수집할 페어 목록 조회 (`candle.market_prefix`으로 필터링)
 - `config.yaml`의 `candle.units` 배열에 지정된 시간 단위 (예: `[1m, 10m, 60m, 1d]`) 의 캔들 데이터를 REST API로 gap-filling
-- **프로그램 시작 시 1회** 및 **Cron으로 10분 1회** (`cron.candle` 설정 참조) 실행
+- **프로그램 시작 시 1회** 및 **`cron.candle` 크론식 기반 간격**으로 반복 실행
 - 각 페어, 단위별로 DB에서 마지막 캔들 시간 조회 후 현재 시간과 비교
 - 누락된 캔들 확인 시 REST API (`/v1/candles/minutes/{unit}` 또는 `/v1/candles/days` for `1d`) 로 조회 (`candle.count` 개수만큼 batch)
 - REST API 응답 데이터를 DB에 `UPSERT` (`INSERT ... ON CONFLICT DO UPDATE`)

@@ -541,3 +541,26 @@ async fn insert_candles(
 
     Ok(())
 }
+
+pub async fn run_gap_filling(
+    pool: &PgPool,
+    rest: &crate::api::rest::RestClient,
+    config: &Config,
+) {
+    info!("Starting candle gap-filling");
+
+    let interval_duration = crate::cron::interval::cron_expression_to_interval(
+        config.cron.candle.as_deref().unwrap_or("*/10 * * * *"),
+    )
+    .unwrap_or(std::time::Duration::from_secs(600));
+
+    let ticker = interval(interval_duration);
+    tokio::pin!(ticker);
+
+    loop {
+        ticker.tick().await;
+        if let Err(e) = fill_all_candle_gaps(pool, rest, config).await {
+            error!("Candle gap-filling failed: {}", e);
+        }
+    }
+}

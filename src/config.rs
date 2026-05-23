@@ -31,6 +31,13 @@ pub struct Config {
 
     pub rate_limit: RateLimitConfig,
     pub partition: PartitionConfig,
+    pub cron: CronConfig,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct CronConfig {
+    #[serde(default)]
+    pub candle: Option<String>,
 }
 
 /// Upbit API endpoint URLs
@@ -93,7 +100,7 @@ pub struct PartitionConfig {
 
 fn default_rest_url() -> String { "https://api.upbit.com".to_string() }
 fn default_ws_url() -> String { "wss://api.upbit.com/websocket/v1".to_string() }
-fn default_candle_units() -> Vec<String> { vec!["1m".to_string(), "10m".to_string(), "60m".to_string()] }
+fn default_candle_units() -> Vec<String> { vec!["1m".to_string(), "10m".to_string(), "60m".to_string(), "1d".to_string()] }
 fn default_count() -> u32 { 200 }
 fn default_api_calls_per_second() -> usize { 5 }
 fn default_retain_days() -> u32 { 30 }

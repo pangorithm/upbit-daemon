@@ -78,9 +78,12 @@ async fn run_ws_session(
         }
     }
 
-    if let Err(e) = collector::candles::fill_all_candle_gaps(&ws_pool, &rest, &ws_config).await {
-        error!("Gap-filling failed: {}", e);
-    }
+    let candle_gap_pool = ws_pool.clone();
+    let candle_gap_rest = rest.clone();
+    let candle_gap_config = ws_config.clone();
+    tokio::spawn(async move {
+        collector::candles::run_gap_filling(&candle_gap_pool, &candle_gap_rest, &candle_gap_config).await;
+    });
 
     let (refresh_cancel_tx, mut refresh_cancel_rx) = tokio::sync::watch::channel(());
     let ws_clone = ws.clone();
@@ -308,6 +311,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("rate_limit: {} calls/sec", config.rate_limit.api_calls_per_second);
     info!("partition: create={}, retain_days={}, retain_months={}",
         config.partition.create, config.partition.retain_days, config.partition.retain_months);
+    if let Some(ref cron_expr) = config.cron.candle {
+        info!("cron.candle: {}", cron_expr);
+    }
 
     let access_key = if cli.access_key.is_empty() { None } else { Some(cli.access_key.clone()) };
     let secret_key = if cli.secret_key.is_empty() { None } else { Some(cli.secret_key.clone()) };
@@ -326,7 +332,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         error!("Failed to create future partitions: {}", e);
     }
 
-    if let Err(e) = api::quotation::market::fetch_and_upsert_markets(&pool, &rest).await {
+    if let Err(e) = api::quotation::market::fetch_and_upsert_markets(&pool, &rest, &config.candle.market_prefix).await {
         error!("Failed to fetch markets: {}", e);
     }
 

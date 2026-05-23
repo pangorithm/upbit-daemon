@@ -6,6 +6,7 @@ use tracing::{error, info};
 pub async fn fetch_and_upsert_markets(
     pool: &PgPool,
     rest: &RestClient,
+    market_prefix: &Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let resp = rest.get("/v1/market/all?is_details=true", &[]).await?;
     let parsed: Value = serde_json::from_str(&resp)?;
@@ -19,11 +20,27 @@ pub async fn fetch_and_upsert_markets(
         }
     };
 
+    let excluded: usize = markets
+        .iter()
+        .filter(|m| {
+            let market = m["market"].as_str().unwrap_or("");
+            market.is_empty() || market.contains(":")
+        })
+        .count();
+    info!("Excluded {} markets (empty or derivative)", excluded);
+
     let filtered: Vec<&Value> = markets
         .iter()
         .filter(|m| {
             let market = m["market"].as_str().unwrap_or("");
-            !market.is_empty() && !market.contains(":") // Exclude derivative markets
+            !market.is_empty() && !market.contains(":")
+        })
+        .filter(|m| {
+            if let Some(prefix) = market_prefix {
+                m["market"].as_str().unwrap_or("").starts_with(prefix)
+            } else {
+                true
+            }
         })
         .collect();
 
