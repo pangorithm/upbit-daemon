@@ -1,41 +1,23 @@
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use cron::Schedule;
 use std::str::FromStr;
-use std::time::Duration;
+use tokio::time::Instant;
 
-pub fn cron_expression_to_interval(cron_expr: &str) -> Option<Duration> {
-    let schedule = Schedule::from_str(cron_expr).ok()?;
-    let mut times = schedule.upcoming(Utc).take(3).collect::<Vec<DateTime<Utc>>>();
-
-    if times.len() < 2 {
-        return None;
-    }
-
-    times.sort();
-    let diff = times[1] - times[0];
-    let total_secs = diff.num_seconds().max(1) as u64;
-    Some(Duration::from_secs(total_secs))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_every_10_minutes() {
-        let interval = cron_expression_to_interval("*/10 * * * *").unwrap();
-        assert_eq!(interval.as_secs(), 600);
-    }
-
-    #[test]
-    fn test_every_1_hour() {
-        let interval = cron_expression_to_interval("0 * * * *").unwrap();
-        assert_eq!(interval.as_secs(), 3600);
-    }
-
-    #[test]
-    fn test_every_24_hours() {
-        let interval = cron_expression_to_interval("0 0 * * *").unwrap();
-        assert_eq!(interval.as_secs(), 86400);
+pub fn next_cron_instant(cron_expr: Option<&str>, default: Instant) -> Instant {
+    let cron_expr = cron_expr.unwrap_or("*/10 * * * *");
+    match Schedule::from_str(cron_expr) {
+        Ok(schedule) => {
+            schedule.upcoming(Utc)
+                .next()
+                .map(|dt| {
+                    let now = Utc::now();
+                    let diff = dt.signed_duration_since(now);
+                    let secs = diff.num_seconds().max(0) as u64;
+                    let nanos = diff.num_microseconds().unwrap_or(0) % 1_000_000;
+                    Instant::now() + std::time::Duration::new(secs, (nanos as u32) * 1000)
+                })
+                .unwrap_or(default)
+        }
+        Err(_) => default,
     }
 }

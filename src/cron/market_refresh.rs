@@ -1,5 +1,4 @@
 use sqlx::PgPool;
-use tokio::time::interval;
 use tracing::{error, info};
 use crate::config::Config;
 use crate::api::rest::RestClient;
@@ -7,16 +6,12 @@ use crate::api::rest::RestClient;
 pub async fn run_market_refresh(pool: &PgPool, rest: &RestClient, config: &Config) {
     info!("Starting market refresh");
 
-    let interval_duration = crate::cron::interval::cron_expression_to_interval(
-        config.cron.market.as_deref().unwrap_or("*/10 * * * *"),
-    )
-    .unwrap_or(std::time::Duration::from_secs(600));
-
-    let ticker = interval(interval_duration);
-    tokio::pin!(ticker);
-
     loop {
-        ticker.tick().await;
+        let next = crate::cron::interval::next_cron_instant(
+            config.cron.market.as_deref(),
+            tokio::time::Instant::now() + std::time::Duration::from_secs(600),
+        );
+        tokio::time::sleep_until(next).await;
         if let Err(e) = run_once(pool, rest, config).await {
             error!("Market refresh failed: {}", e);
         }
