@@ -3,6 +3,7 @@ name = "upbit-daemon"
 version = "0.1.0"
 edition = "2021"
 description = "업비트 API 정보 수집 데몬"
+build = "build.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
