@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::db::partition::ensure_partitions;
+use serde::Deserialize;
 use sqlx::PgPool;
 use tracing::{error, info};
 
@@ -16,47 +17,17 @@ pub async fn init_database(
     Ok(())
 }
 
+#[derive(Deserialize)]
+struct ExpectedTables {
+    tables: Vec<String>,
+}
+
 async fn ensure_tables_exist(pool: &PgPool) {
-    let migration_sql = std::fs::read_to_string("migrations/001_initial.sql")
-        .expect("Failed to read migration file");
-
-    let drop_tables: std::collections::HashSet<&str> = migration_sql
-        .lines()
-        .filter(|l| l.trim().to_lowercase().starts_with("drop"))
-        .flat_map(|l| {
-            let parts: Vec<&str> = l.split_whitespace().collect();
-            if parts.len() >= 3 && parts[1].to_lowercase() == "table" {
-                let name = parts[2].trim_end_matches(';').trim();
-                Some(name)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let mut expected_tables: Vec<String> = migration_sql
-        .lines()
-        .filter(|l| {
-            let trimmed = l.trim();
-            trimmed.to_lowercase().starts_with("create table ")
-                && !trimmed.to_lowercase().contains("partition of")
-        })
-        .filter_map(|l| {
-            let parts: Vec<&str> = l.trim().split_whitespace().collect();
-            if parts.len() >= 3 {
-                let name = parts[1].trim_end_matches('(').trim_end_matches(';').trim();
-                if !name.is_empty() && !drop_tables.contains(name) {
-                    Some(name.to_string())
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    expected_tables.sort();
+    let yaml = std::fs::read_to_string(concat!(env!("OUT_DIR"), "/expected_tables.yaml"))
+        .expect("Failed to read expected_tables.yaml");
+    let config: ExpectedTables =
+        serde_yaml::from_str(&yaml).expect("Failed to parse expected_tables.yaml");
+    let expected_tables: Vec<&str> = config.tables.iter().map(|s| s.as_str()).collect();
 
     let existing = sqlx::query_scalar::<_, String>(
         r#"SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name"#
@@ -67,8 +38,8 @@ async fn ensure_tables_exist(pool: &PgPool) {
 
     let missing: Vec<&str> = expected_tables
         .iter()
-        .filter(|t| !existing_set.contains(t.as_str()))
-        .map(|t| t.as_str())
+        .filter(|t| !existing_set.contains(*t))
+        .copied()
         .collect();
     if missing.is_empty() {
         info!("All tables exist");
