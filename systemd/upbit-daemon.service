@@ -1,0 +1,21 @@
+[Unit]
+Description=Upbit API Data Collection Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=upbit
+Group=upbit
+WorkingDirectory=/opt/upbit-daemon
+ExecStart=/opt/upbit-daemon/upbit-daemon --config-path /opt/upbit-daemon/config.yaml
+Restart=on-failure
+RestartSec=10
+Environment=DATABASE_URL=postgresql://upbit:password@localhost:5432/upbit_daemon
+Environment=UPBIT_ACCESS_KEY=<your_access_key>
+Environment=UPBIT_SECRET_KEY=<your_secret_key>
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=upbit-daemon
+
+[Install]
+WantedBy=multi-user.target
