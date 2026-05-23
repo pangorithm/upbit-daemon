@@ -23,7 +23,6 @@ static SUBSCRIBED_UNITS: OnceLock<std::sync::Mutex<HashSet<String>>> = OnceLock:
 async fn run_ws_session(
     ws_pool: sqlx::PgPool,
     ws_config: config::Config,
-    rest: crate::api::rest::RestClient,
     access_key: Option<String>,
     secret_key: Option<String>,
     label: &str,
@@ -78,19 +77,17 @@ async fn run_ws_session(
         }
     }
 
-    let candle_gap_pool = ws_pool.clone();
-    let candle_gap_rest = rest.clone();
-    let candle_gap_config = ws_config.clone();
-    tokio::spawn(async move {
-        collector::candles::run_gap_filling(&candle_gap_pool, &candle_gap_rest, &candle_gap_config).await;
-    });
+   
 
     let (refresh_cancel_tx, mut refresh_cancel_rx) = tokio::sync::watch::channel(());
     let ws_clone = ws.clone();
     let pool_clone = ws_pool.clone();
     let config_clone = ws_config.clone();
     let refresh_handle = tokio::spawn(async move {
-        let interval_duration = std::time::Duration::from_secs(10 * 60);
+        let interval_duration = crate::cron::interval::cron_expression_to_interval(
+            config_clone.cron.subscribe.as_deref().unwrap_or("*/10 * * * *"),
+        )
+        .unwrap_or(std::time::Duration::from_secs(600));
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(interval_duration) => {
@@ -314,6 +311,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ref cron_expr) = config.cron.candle {
         info!("cron.candle: {}", cron_expr);
     }
+    if let Some(ref cron_expr) = config.cron.market {
+        info!("cron.market: {}", cron_expr);
+    }
+    if let Some(ref cron_expr) = config.cron.subscribe {
+        info!("cron.subscribe: {}", cron_expr);
+    }
 
     let access_key = if cli.access_key.is_empty() { None } else { Some(cli.access_key.clone()) };
     let secret_key = if cli.secret_key.is_empty() { None } else { Some(cli.secret_key.clone()) };
@@ -339,14 +342,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ws_pool = pool.clone();
     let ws_config = config.clone();
     let ws_rest = rest.clone();
-    let ws_rest_inner = ws_rest.clone();
     let ws_rest_market = ws_rest.clone();
     let ws_handle = tokio::spawn(async move {
         let mut reconnect_delay_secs: u64 = 1;
         let max_reconnect_delay_secs: u64 = 30;
         loop {
-            run_ws_session(ws_pool.clone(), ws_config.clone(), ws_rest_inner.clone(),
-                           access_key.clone(), secret_key.clone(), "WS").await;
+            run_ws_session(ws_pool.clone(), ws_config.clone(),
+                       access_key.clone(), secret_key.clone(), "WS").await;
             tokio::time::sleep(std::time::Duration::from_secs(reconnect_delay_secs)).await;
             reconnect_delay_secs = (reconnect_delay_secs * 2).min(max_reconnect_delay_secs);
         }
@@ -365,6 +367,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let market_rest = ws_rest_market.clone();
     tokio::spawn(async move {
         cron::market_refresh::run_market_refresh(&market_pool, &market_rest, &market_config).await;
+    });
+
+    let candle_gap_pool = pool.clone();
+    let candle_gap_rest = rest.clone();
+    let candle_gap_config = config.clone();
+    tokio::spawn(async move {
+        collector::candles::run_gap_filling(&candle_gap_pool, &candle_gap_rest, &candle_gap_config).await;
     });
 
     let _ = cron_handle.await;

@@ -38,6 +38,10 @@ pub struct Config {
 pub struct CronConfig {
     #[serde(default)]
     pub candle: Option<String>,
+    #[serde(default)]
+    pub market: Option<String>,
+    #[serde(default)]
+    pub subscribe: Option<String>,
 }
 
 /// Upbit API endpoint URLs

@@ -7,11 +7,16 @@ use crate::api::rest::RestClient;
 pub async fn run_market_refresh(pool: &PgPool, rest: &RestClient, config: &Config) {
     info!("Starting market refresh");
 
-    let interval = interval(std::time::Duration::from_secs(10 * 60));
-    tokio::pin!(interval);
+    let interval_duration = crate::cron::interval::cron_expression_to_interval(
+        config.cron.market.as_deref().unwrap_or("*/10 * * * *"),
+    )
+    .unwrap_or(std::time::Duration::from_secs(600));
+
+    let ticker = interval(interval_duration);
+    tokio::pin!(ticker);
 
     loop {
-        interval.tick().await;
+        ticker.tick().await;
         if let Err(e) = run_once(pool, rest, config).await {
             error!("Market refresh failed: {}", e);
         }

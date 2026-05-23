@@ -15,3 +15,5 @@ partition:
   create: 3
 cron:
   candle: "*/10 * * * *"
+  market: "0 0 * * *"
+  subscribe: "0 0 * * *"

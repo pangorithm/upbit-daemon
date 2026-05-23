@@ -85,7 +85,9 @@ partition:
   retain_months: 6             # 월 단위 파티션 유지개월수
   create: 3                    # 미리 생성할 미래 파티션 개수
 cron:
-  candle: "*/10 * * * *"       # 캔들 gap-filling + 페어 목록 갱신 cron (10분 간격)
+  candle: "*/10 * * * *"       # 캔들 gap-filling cron
+  market: "*/10 * * * *"       # 페어 목록 갱신 cron
+  subscribe: "*/10 * * * *"    # WebSocket 구독 갱신 cron
 ```
 
 ## 데이터 모델
@@ -157,14 +159,14 @@ DB 컬럼명은 REST API 응답 필드명을 기준으로 매핑합니다. WebSo
 
 ### 7. 페어 목록 조회
 - REST API (`/v1/markets`) 로 업비트 전체 페어 목록 조회
-- **프로그램 시작 시 1회** 및 **Cron으로 10분 1회** 실행
+- **프로그램 시작 시 1회** 및 **`cron.market` 크론식 기반 간격**으로 반복 실행
 - `candle.market_prefix`으로 필터링 후 `markets` 테이블에 `UPSERT` (동시성 처리: `ON CONFLICT DO UPDATE`)
   - 신규 페어 추가 / 기존 페어 정보 업데이트
 
 ### 8. REST API 캔들 gap-filling
 - `markets` 테이블에서 수집할 페어 목록 조회 (`candle.market_prefix`으로 필터링)
 - `config.yaml`의 `candle.units` 배열에 지정된 시간 단위 (예: `[1m, 10m, 60m, 1d]`) 의 캔들 데이터를 REST API로 gap-filling
-- **프로그램 시작 시 1회** 및 **`cron.candle` 크론식 기반 간격**으로 반복 실행
+- **프로그램 시작 시 1회** 및 **`cron.candle` 크론식 기반 간격**으로 반복 실행 (WebSocket 세션과 독립 흐름)
 - 각 페어, 단위별로 DB에서 마지막 캔들 시간 조회 후 현재 시간과 비교
 - 누락된 캔들 확인 시 REST API (`/v1/candles/minutes/{unit}` 또는 `/v1/candles/days` for `1d`) 로 조회 (`candle.count` 개수만큼 batch)
 - REST API 응답 데이터를 DB에 `UPSERT` (`INSERT ... ON CONFLICT DO UPDATE`)
@@ -175,6 +177,7 @@ DB 컬럼명은 REST API 응답 필드명을 기준으로 매핑합니다. WebSo
 - 프로그램 시작 시 명시된 페어에 대해 `candle.1s` 구독
 - 구독 중인 스트림 목록은 WebSocket `LIST_SUBSCRIPTIONS` 메서드로 조회 가능
 - WebSocket 연결 끊김 시 자동 재연결 로직 포함
+- 신규 페어 발생 시 `cron.subscribe` 크론식 기반 간격으로 자동 구독
 - `1s` 캔들은 gap-filling 하지 않음 (WebSocket 실시간 수신만)
 
 ### 10. 실시간 수신 데이터 DB Upsert
