@@ -49,9 +49,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("market_prefix: {:?}", config.candle.market_prefix);
     info!("candle_units: {:?}", config.candle.units);
     info!("candle_count: {}", config.candle.count);
-    info!("rate_limit: {} calls/sec", config.rate_limit.api_calls_per_second);
-    info!("partition: create={}, retain_days={}, retain_months={}",
-        config.partition.create, config.partition.retain_days, config.partition.retain_months);
+    info!(
+        "rate_limit: {} calls/sec",
+        config.rate_limit.api_calls_per_second
+    );
+    info!(
+        "partition: create={}, retain_days={}, retain_months={}",
+        config.partition.create, config.partition.retain_days, config.partition.retain_months
+    );
     if let Some(ref cron_expr) = config.cron.candle {
         info!("cron.candle: {}", cron_expr);
     }
@@ -65,8 +70,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("cron.partition: {}", cron_expr);
     }
 
-    let access_key = if cli.access_key.is_empty() { None } else { Some(cli.access_key.clone()) };
-    let secret_key = if cli.secret_key.is_empty() { None } else { Some(cli.secret_key.clone()) };
+    let access_key = if cli.access_key.is_empty() {
+        None
+    } else {
+        Some(cli.access_key.clone())
+    };
+    let secret_key = if cli.secret_key.is_empty() {
+        None
+    } else {
+        Some(cli.secret_key.clone())
+    };
 
     let pool = db::create_pool(&cli.database_url).await?;
     info!("Database connected");
@@ -74,13 +87,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rest = api::rest::RestClient::new(&config.url.rest, access_key.clone(), secret_key.clone());
     info!("REST client created");
 
-    if let Err(e) = db::init::init_database(&pool).await {
+    if let Err(e) = db::init::init_database(&pool, &config).await {
         error!("Database initialization failed: {}", e);
     }
-    if let Err(e) = db::partition::create_future_partitions(&pool, &config).await {
-        error!("Failed to create future partitions: {}", e);
-    }
-    if let Err(e) = api::quotation::market::fetch_and_upsert_markets(&pool, &rest, &config.candle.market_prefix).await {
+    if let Err(e) =
+        api::quotation::market::fetch_and_upsert_markets(&pool, &rest, &config.candle.market_prefix)
+            .await
+    {
         error!("Failed to fetch markets: {}", e);
     }
 
@@ -93,14 +106,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut reconnect_delay_secs: u64 = 1;
         let max_reconnect_delay_secs: u64 = 30;
         loop {
-            ws::session::run_ws_session(ws_pool.clone(), ws_config.clone(),
-                access_key.clone(), secret_key.clone(), "WS").await;
+            ws::session::run_ws_session(
+                ws_pool.clone(),
+                ws_config.clone(),
+                access_key.clone(),
+                secret_key.clone(),
+                "WS",
+            )
+            .await;
             tokio::time::sleep(std::time::Duration::from_secs(reconnect_delay_secs)).await;
             reconnect_delay_secs = (reconnect_delay_secs * 2).min(max_reconnect_delay_secs);
         }
     });
 
-let cron_config = config.clone();
+    let cron_config = config.clone();
     let cron_pool = pool.clone();
     let cron_pool_inner = cron_pool.clone();
     tokio::spawn(async move {
@@ -114,11 +133,12 @@ let cron_config = config.clone();
         cron::market_refresh::run_market_refresh(&market_pool, &market_rest, &market_config).await;
     });
 
-   let candle_gap_pool = pool.clone();
+    let candle_gap_pool = pool.clone();
     let candle_gap_rest = rest.clone();
     let candle_gap_config = config.clone();
     tokio::spawn(async move {
-        collector::candles::run_gap_filling(&candle_gap_pool, &candle_gap_rest, &candle_gap_config).await;
+        collector::candles::run_gap_filling(&candle_gap_pool, &candle_gap_rest, &candle_gap_config)
+            .await;
     });
 
     let _ = ws_handle.await;

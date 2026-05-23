@@ -1,177 +1,92 @@
-use chrono::{Datelike, Days, Months, NaiveDate};
+use chrono::{Datelike, Days, Months, NaiveDate, NaiveTime};
 use sqlx::{PgPool, Row};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use crate::config::Config;
 
-struct ExistingPartition {
-    from_val: String,
-    to_val: String,
+const PARTITION_START_TIME: NaiveTime = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+
+/// Partition key format per table — determines FROM/TO bound values
+enum PartitionKeyFormat {
+    /// VARCHAR(8) → 'YYYYMMDD'
+    Tickers,
+    /// VARCHAR(10) → 'YYYY-MM-DD'
+    Trades,
+    /// VARCHAR(20) → 'YYYY-MM-DDTHH:MM:SS'
+    Candles,
 }
 
-pub async fn create_future_partitions(pool: &PgPool, config: &Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let today = chrono::Utc::now().naive_utc();
-    let today_date = today.date();
-    let n = config.partition.create;
+pub async fn ensure_partitions(pool: &PgPool, config: &Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    for table in &["tickers", "trades", "candles_seconds"] {
+        let key_format = match *table {
+            "tickers" => PartitionKeyFormat::Tickers,
+            "trades" => PartitionKeyFormat::Trades,
+            _ => PartitionKeyFormat::Candles,
+        };
+        create_daily_partitions(pool, table, config.partition.create, &key_format).await;
+    }
+    for table in &["candles_minutes", "candles_days"] {
+        let key_format = PartitionKeyFormat::Candles;
+        create_monthly_partitions(pool, table, config.partition.create, &key_format).await;
+    }
 
-    // 일별 파티션
-    let existing = get_existing_partition_ranges(pool, "tickers").await;
-    create_daily_string_partitions(pool, "tickers", &today_date, n, &existing).await;
-
-    let existing = get_existing_partition_ranges(pool, "trades").await;
-    create_daily_iso_partitions(pool, "trades", &today_date, n, &existing).await;
-
-    let existing = get_existing_partition_ranges(pool, "candles_seconds").await;
-    create_daily_ts_partitions(pool, "candles_seconds", &today_date, n, &existing).await;
-
-    // 월별 파티션
-    let existing = get_existing_partition_ranges(pool, "candles_minutes").await;
-    create_monthly_partitions(pool, "candles_minutes", &today_date, n, &existing).await;
-
-    let existing = get_existing_partition_ranges(pool, "candles_days").await;
-    create_monthly_partitions(pool, "candles_days", &today_date, n, &existing).await;
-
-    info!("Future partitions created");
+    info!("Partitions ensured");
     Ok(())
 }
 
-async fn get_existing_partition_ranges(pool: &PgPool, table_name: &str) -> Vec<ExistingPartition> {
-    let rows = match sqlx::query(
-        r#"
-        SELECT c.relname,
-               pg_get_expr(c.relpartbound, c.oid) AS bound
-        FROM pg_inherits i
-        JOIN pg_class c ON c.oid = i.inhrelid
-        JOIN pg_class p ON p.oid = i.inhparent
-        WHERE p.relname = $1
-        ORDER BY c.relname
-        "#,
-    )
-    .bind(table_name)
-    .fetch_all(pool)
-    .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            debug!(table = table_name, error = %e, "Failed to query existing partition ranges");
-            return Vec::new();
-        }
+async fn create_daily_partitions(pool: &PgPool, table: &str, n: u32, key_format: &PartitionKeyFormat) {
+    let last_date = get_last_partition_date(pool, table).await;
+
+    let start = match last_date {
+        Some(d) => d.checked_add_days(Days::new(1)).unwrap(),
+        None => chrono::Utc::now().naive_utc().date(),
     };
 
-    let existing: Vec<_> = rows.iter()
-        .filter_map(|row| {
-            let bound: String = row.get("bound");
-            let from = extract_bound_from(&bound);
-            let to = extract_bound_to(&bound);
-             match (from, to) {
-                (Some(f), Some(t)) => Some(ExistingPartition {
-                    from_val: f,
-                    to_val: t,
-                }),
-                _ => None,
-            }
-        })
-        .collect();
-    existing
-}
+    let today = chrono::Utc::now().naive_utc().date();
+    let start = std::cmp::min(start, today);
+    let gap_days = (today - start).num_days() as u32;
 
-fn extract_bound_from(bound: &str) -> Option<String> {
-    let from_pos = bound.find("FROM (")?;
-    let rest = &bound[from_pos + 5..];
-    let end = rest.find(')')?;
-    Some(rest[..end].trim().to_string())
-}
+    let mut count = 0u32;
+    let mut current = start;
+    while count < gap_days + n {
+        let next = match current.checked_add_days(Days::new(1)) {
+            Some(n) => n,
+            None => break,
+        };
+        let (from_str, to_str) = key_format.daily_bounds(&current, &next);
 
-fn extract_bound_to(bound: &str) -> Option<String> {
-    let to_pos = bound.find("TO (")?;
-    let rest = &bound[to_pos + 4..];
-    let end = rest.find(')')?;
-    Some(rest[..end].trim().to_string())
-}
-
-fn normalize_ts(s: &str) -> String {
-    s.replace('T', " ")
-}
-
-fn overlaps(new_from: &str, new_to: &str, existing: &[ExistingPartition]) -> bool {
-    let nf = normalize_ts(new_from);
-    let nt = normalize_ts(new_to);
-    existing.iter().any(|ep| {
-        nf < ep.to_val && ep.from_val < nt
-    })
-}
-
-async fn create_daily_string_partitions(pool: &PgPool, table: &str, today: &NaiveDate, n: u32, existing: &[ExistingPartition]) {
-    for i in 0..n {
-        let d = today.checked_add_days(Days::new(i as u64)).unwrap();
-        let next = d + Days::new(1);
-        let from_str = format!("{:04}{:02}{:02}", d.year(), d.month(), d.day());
-        let to_str = format!("{:04}{:02}{:02}", next.year(), next.month(), next.day());
-
-        if overlaps(&from_str, &to_str, existing) {
-            continue;
-        }
-
-        let name = format!("{}_y{:04}m{:02}d{:02}", table, d.year(), d.month(), d.day());
+        let name = format!("{}_y{:04}m{:02}d{:02}", table, current.year(), current.month(), current.day());
         let sql = format!(
             "CREATE TABLE IF NOT EXISTS {} PARTITION OF {} FOR VALUES FROM ('{}') TO ('{}')",
             name, table, from_str, to_str
         );
         create_partition(pool, table, &sql).await;
+        count += 1;
+        current = next;
     }
 }
 
-async fn create_daily_ts_partitions(pool: &PgPool, table: &str, today: &NaiveDate, n: u32, existing: &[ExistingPartition]) {
-    for i in 0..n {
-        let d = today.checked_add_days(Days::new(i as u64)).unwrap();
-        let end = d + Days::new(1);
-        let from_str = d.and_time(chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap()).to_string();
-        let to_str = end.and_time(chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap()).to_string();
+async fn create_monthly_partitions(pool: &PgPool, table: &str, n: u32, key_format: &PartitionKeyFormat) {
+    let last_date = get_last_partition_month(pool, table).await;
 
-        if overlaps(&from_str, &to_str, existing) {
-            continue;
-        }
+    let now = chrono::Utc::now().naive_utc().date();
+    let (base_year, base_month) = match last_date {
+        Some(d) => (d.year(), d.month()),
+        None => (now.year(), now.month()),
+    };
 
-        let name = format!("{}_y{:04}m{:02}d{:02}", table, d.year(), d.month(), d.day());
-        let sql = format!(
-            "CREATE TABLE IF NOT EXISTS {} PARTITION OF {} FOR VALUES FROM ('{}') TO ('{}')",
-            name, table, from_str, to_str
-        );
-        create_partition(pool, table, &sql).await;
-    }
-}
+    let current_month = NaiveDate::from_ymd_opt(base_year, base_month, 1).unwrap_or(now);
+    let today_month = NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap();
+    let gap_months = months_between(current_month, today_month);
 
-async fn create_daily_iso_partitions(pool: &PgPool, table: &str, today: &NaiveDate, n: u32, existing: &[ExistingPartition]) {
-    for i in 0..n {
-        let d = today.checked_add_days(Days::new(i as u64)).unwrap();
-        let next = d + Days::new(1);
-        let from_str = d.format("%Y-%m-%d").to_string();
-        let to_str = next.format("%Y-%m-%d").to_string();
-
-        if overlaps(&from_str, &to_str, existing) {
-            continue;
-        }
-
-        let name = format!("{}_y{:04}m{:02}d{:02}", table, d.year(), d.month(), d.day());
-        let sql = format!(
-            "CREATE TABLE IF NOT EXISTS {} PARTITION OF {} FOR VALUES FROM ('{}') TO ('{}')",
-            name, table, from_str, to_str
-        );
-        create_partition(pool, table, &sql).await;
-    }
-}
-
-async fn create_monthly_partitions(pool: &PgPool, table: &str, today: &NaiveDate, n: u32, existing: &[ExistingPartition]) {
-    for i in 0..n {
-        let future = NaiveDate::from_ymd_opt(today.year(), today.month() + i as u32, 1).unwrap();
+    let mut count = 0u32;
+    let mut month_idx = 0u32;
+    while count < gap_months + n {
+        let future = match current_month + Months::new(month_idx) {
+            d if d <= today_month || count < gap_months + n => d,
+            _ => break,
+        };
         let next_month = future + Months::new(1);
-        let from_dt = future.and_time(chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
-        let to_dt = next_month.and_time(chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
-        let from_str = from_dt.format("%Y-%m-%dT%H:%M:%S").to_string();
-        let to_str = to_dt.format("%Y-%m-%dT%H:%M:%S").to_string();
-
-        if overlaps(&from_str, &to_str, existing) {
-            continue;
-        }
+        let (from_str, to_str) = key_format.monthly_bounds(&future, &next_month);
 
         let name = format!("{}_y{:04}m{:02}", table, future.year(), future.month());
         let sql = format!(
@@ -179,22 +94,133 @@ async fn create_monthly_partitions(pool: &PgPool, table: &str, today: &NaiveDate
             name, table, from_str, to_str
         );
         create_partition(pool, table, &sql).await;
+        count += 1;
+        month_idx += 1;
     }
+}
+
+impl PartitionKeyFormat {
+    fn daily_bounds(&self, from: &NaiveDate, to: &NaiveDate) -> (String, String) {
+        match self {
+            PartitionKeyFormat::Tickers => (
+                format!("{:04}{:02}{:02}", from.year(), from.month(), from.day()),
+                format!("{:04}{:02}{:02}", to.year(), to.month(), to.day()),
+            ),
+            PartitionKeyFormat::Trades => (
+                format!("{:04}-{:02}-{:02}", from.year(), from.month(), from.day()),
+                format!("{:04}-{:02}-{:02}", to.year(), to.month(), to.day()),
+            ),
+            PartitionKeyFormat::Candles => (
+                from.and_time(PARTITION_START_TIME).format("%Y-%m-%dT%H:%M:%S").to_string(),
+                to.and_time(PARTITION_START_TIME).format("%Y-%m-%dT%H:%M:%S").to_string(),
+            ),
+        }
+    }
+
+    fn monthly_bounds(&self, from: &NaiveDate, to: &NaiveDate) -> (String, String) {
+        let from_dt = from.and_time(PARTITION_START_TIME);
+        let to_dt = to.and_time(PARTITION_START_TIME);
+        (
+            from_dt.format("%Y-%m-%dT%H:%M:%S").to_string(),
+            to_dt.format("%Y-%m-%dT%H:%M:%S").to_string(),
+        )
+    }
+}
+
+fn months_between(from: NaiveDate, to: NaiveDate) -> u32 {
+    ((to.year() * 12 + to.month() as i32) - (from.year() * 12 + from.month() as i32)) as u32
+}
+
+async fn get_last_partition_date(pool: &PgPool, table: &str) -> Option<NaiveDate> {
+    let rows = sqlx::query(
+        r#"
+        SELECT c.relname AS partition_name
+        FROM pg_inherits i
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_class p ON p.oid = i.inhparent
+        WHERE p.relname = $1
+        ORDER BY c.relname DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(table)
+    .fetch_all(pool)
+    .await;
+
+    match rows {
+        Ok(rows) if !rows.is_empty() => {
+            let name: String = rows[0].get("partition_name");
+            extract_date_from_partition_name(&name)
+        }
+        _ => None,
+    }
+}
+
+async fn get_last_partition_month(pool: &PgPool, table: &str) -> Option<NaiveDate> {
+    let rows = sqlx::query(
+        r#"
+        SELECT c.relname AS partition_name
+        FROM pg_inherits i
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_class p ON p.oid = i.inhparent
+        WHERE p.relname = $1
+        ORDER BY c.relname DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(table)
+    .fetch_all(pool)
+    .await;
+
+    match rows {
+        Ok(rows) if !rows.is_empty() => {
+            let name: String = rows[0].get("partition_name");
+            extract_month_from_partition_name(&name)
+        }
+        _ => None,
+    }
+}
+
+fn extract_date_from_partition_name(name: &str) -> Option<NaiveDate> {
+    let suffix = name.rsplit('_').next()?;
+    if !suffix.starts_with('y') {
+        return None;
+    }
+    let without_y = &suffix[1..];
+    let m_pos = without_y.find('m')?;
+    let d_pos = without_y[m_pos + 1..].find('d')?;
+    let year = without_y[..m_pos].parse().ok()?;
+    let month = without_y[m_pos + 1..m_pos + 1 + d_pos].parse().ok()?;
+    let day = without_y[m_pos + 1 + d_pos + 1..].parse().ok()?;
+    NaiveDate::from_ymd_opt(year, month, day)
+}
+
+fn extract_month_from_partition_name(name: &str) -> Option<NaiveDate> {
+    let suffix = name.rsplit('_').next()?;
+    if !suffix.starts_with('y') {
+        return None;
+    }
+    let without_y = &suffix[1..];
+    let m_pos = without_y.find('m')?;
+    let year = without_y[..m_pos].parse().ok()?;
+    let month = without_y[m_pos + 1..].parse().ok()?;
+    NaiveDate::from_ymd_opt(year, month, 1)
 }
 
 async fn create_partition(pool: &PgPool, table_name: &str, sql: &str) {
     if let Err(e) = sqlx::query(sql).execute(pool).await {
         let err_str = e.to_string();
         if err_str.contains("would overlap") {
-            info!(table = table_name, sql = %sql, "Skipping partition (already exists with overlapping range)");
+            info!(table = table_name, sql = %sql, "Skipping partition (already exists)");
         } else {
-            warn!(table = table_name, error = %e, "Failed to create future partition");
+            warn!(table = table_name, error = %e, "Failed to create partition");
         }
     } else {
-        let partition_name = sql.split("CREATE TABLE IF NOT EXISTS ")
+        let partition_name = sql
+            .split("CREATE TABLE IF NOT EXISTS ")
             .nth(1)
             .and_then(|s| s.split(" PARTITION OF ").next())
             .unwrap_or("unknown");
-        info!("Created future partition for {} ({})", table_name, partition_name);
+        info!("Created partition for {} ({})", table_name, partition_name);
     }
 }

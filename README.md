@@ -31,8 +31,8 @@ upbit-daemon/
 │   ├── error.rs             # 에러 타입 정의
 │   ├── db/
 │   │   ├── mod.rs           # DB 연결, Pool 관리
-│   │   ├── init.rs          # 테이블 존재 확인, 마이그레이션, 파티션 gap-filling
-│   │   └── partition.rs     # 미래 파티션 생성
+│   │   ├── init.rs          # 테이블 존재 확인, 마이그레이션
+│   │   └── partition.rs     # 파티션 생성 (gap-filling + future)
 │   ├── auth.rs              # JWT 생성 (REST + WebSocket 공통)
 ├── api/
 │   │   ├── mod.rs           # 모듈 export
@@ -53,7 +53,7 @@ upbit-daemon/
 │   └── cron/
 │       ├── mod.rs                 # 모듈 export
 │       ├── market_refresh.rs      # 페어 목록 갱신 (10분 cron)
-│       ├── partition_schedule.rs  # 파티션 생성/삭제 스케줄러
+│       ├── partition_schedule.rs  # 파티션 생성/삭제 cron
 │       └── partition_delete.rs    # 과거 파티션 삭제
 └── docs/                    # 업비트 API 문서
     └── v1.6.2/
@@ -126,12 +126,12 @@ DB 컬럼명은 REST API 응답 필드명을 기준으로 매핑합니다. WebSo
 
 **프로그램 시작 시:**
 1. 기존 파티션 조회
-2. 월별 테이블 (candles_minutes, candles_days): 마지막 파티션 ~ 현재 월 사이 빈 칸 생성 (gap-filling)
-3. 일별 테이블 (tickers, trades, candles_seconds): 마지막 파티션 ~ 현재 일 사이 빈 칸 생성 (gap-filling)
-4. 다음 3개월분 월 파티션 생성
+2. 마지막 파티션부터 현재 일/월 사이 빈 칸 생성 + `partition.create` 개수 미래 파티션 생성 (통합)
+   - 일별 테이블 (tickers, trades, candles_seconds): 마지막 파티션 → 현재 + N 개
+   - 월별 테이블 (candles_minutes, candles_days): 마지막 파티션 → 현재 + N 개
 
 **Cron (24시간마다):**
-1. 다음 3개월분 월 파티션 생성 (이미 있으면 skip)
+1. 위와 동일하게 파티션 생성 (누락된 파티션 gap-filling + 미래 N 개)
 2. 과거 파티션 삭제 (`partition.retain_days`, `partition.retain_months` 참조)
 
 ## 실행 시나리오
@@ -149,15 +149,12 @@ DB 컬럼명은 REST API 응답 필드명을 기준으로 매핑합니다. WebSo
 - 프로그램 시작 시 핵심 테이블 (markets, tickers, trades, candles_*, orderbooks) 이 존재하는지 확인
 - 초기화 안 되어 있으면 `migrations/001_initial.sql` 기반 자동 생성
 
-### 4. 파티션 gap-filling
+### 4. 파티션 생성 (gap-filling + future)
 - 각 파티션 테이블에서 마지막 생성된 파티션 확인
-- 마지막 파티션부터 현재 시점까지 누락된 파티션 테이블 자동 생성
-  - `trades`, `tickers`, `candles_seconds`: 일 단위 파티션 (누락된 일자 생성)
-  - `candles_minutes`, `candles_days`: 월 단위 파티션 (누락된 월 생성)
-
-### 5. 미래 파티션 생성
-- 프로그램 시작 시 다음 `partition_create` 개수 (기본 3) 개 파티션 생성
-- Cron (24시간마다) 으로 계속 생성 (이미 있으면 skip)
+- 마지막 파티션부터 현재 시점까지 누락된 파티션 자동 생성 + `partition.create` 개수 미래 파티션 생성
+  - `trades`, `tickers`, `candles_seconds`: 일 단위 파티션 (누락 일자 생성 + N 개 미래)
+  - `candles_minutes`, `candles_days`: 월 단위 파티션 (누락 월 생성 + N 개 미래)
+- 프로그램 시작 시 및 Cron (24시간마다) 실행
 
 ### 6. 과거 파티션 삭제 (Cron과 함께 실행)
 - `tickers`, `trades`, `candles_seconds` (일 단위): `partition.retain_days` 이상 된 파티션 삭제
