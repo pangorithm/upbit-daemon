@@ -69,12 +69,14 @@ async fn create_monthly_partitions(pool: &PgPool, table: &str, n: u32, key_forma
     let last_date = get_last_partition_month(pool, table).await;
 
     let now = chrono::Utc::now().naive_utc().date();
-    let (base_year, base_month) = match last_date {
-        Some(d) => (d.year(), d.month()),
-        None => (now.year(), now.month()),
-    };
 
-    let current_month = NaiveDate::from_ymd_opt(base_year, base_month, 1).unwrap_or(now);
+    let current_month = match last_date {
+        Some(d) => {
+            let next = d + Months::new(1);
+            NaiveDate::from_ymd_opt(next.year(), next.month(), 1).unwrap()
+        }
+        None => NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap(),
+    };
     let today_month = NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap();
     let gap_months = months_between(current_month, today_month);
 
