@@ -5,6 +5,7 @@ use serde_json::Value;
 use sqlx::PgPool;
 use sqlx::Row;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -564,14 +565,26 @@ pub async fn run_gap_filling(
 ) {
     info!("Starting candle gap-filling");
 
+    let running = AtomicBool::new(false);
+
+    if let Err(e) = fill_all_candle_gaps(pool, rest, config).await {
+        error!("Initial candle gap-filling failed: {}", e);
+    }
+
     loop {
         let next = crate::cron::interval::next_cron_instant(
             config.cron.candle.as_deref(),
             tokio::time::Instant::now() + std::time::Duration::from_secs(600),
         );
         tokio::time::sleep_until(next).await;
-        if let Err(e) = fill_all_candle_gaps(pool, rest, config).await {
-            error!("Candle gap-filling failed: {}", e);
+
+        if running.compare_exchange(false, true, Ordering::AcqRel, Ordering::AcqRel).is_ok() {
+            if let Err(e) = fill_all_candle_gaps(pool, rest, config).await {
+                error!("Candle gap-filling failed: {}", e);
+            }
+            running.store(false, Ordering::Release);
+        } else {
+            info!("Skipping candle gap-filling (previous run still in progress)");
         }
     }
 }
