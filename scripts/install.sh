@@ -4,7 +4,7 @@ set -euo pipefail
 # Install upbit-daemon as a systemd service
 SERVICE_NAME=upbit-daemon
 INSTALL_DIR=/opt/${SERVICE_NAME}
-USER=${USER:-upbit}
+USER=upbit
 
 echo "Building ${SERVICE_NAME}..."
 cargo build --release

@@ -4,14 +4,14 @@ use std::path::Path;
 
 fn main() {
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
-    let dest_path = Path::new(&out_dir).join("expected_tables.yaml");
+    let dest_path = Path::new(&out_dir).join("expected_tables.rs");
 
     let all_sql = read_migrations();
     let drop_tables = parse_drop_tables(&all_sql);
     let tables = parse_create_tables(&all_sql, &drop_tables);
 
-    let code = generate_yaml(&tables);
-    fs::write(&dest_path, &code).expect("Failed to write expected_tables.yaml");
+    let code = generate_tables_code(&tables);
+    fs::write(&dest_path, &code).expect("Failed to write expected_tables.rs");
 
     println!("cargo::rerun-if-changed=migrations");
 }
@@ -72,7 +72,10 @@ fn parse_create_tables(sql: &str, drop_tables: &HashSet<&str>) -> Vec<String> {
     tables
 }
 
-fn generate_yaml(tables: &[String]) -> String {
-    let lines: Vec<String> = tables.iter().map(|t| format!("- {t}")).collect();
-    format!("tables:\n{}\n", lines.join("\n"))
+fn generate_tables_code(tables: &[String]) -> String {
+    let items: Vec<String> = tables.iter().map(|t| format!("    \"{t}\",")).collect();
+    format!(
+        "pub const EXPECTED_TABLES: &[&str] = &[\n{}\n];\n",
+        items.join("\n")
+    )
 }
