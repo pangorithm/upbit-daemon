@@ -48,7 +48,8 @@ CREATE TABLE trades (
     trade_time_utc VARCHAR(10) NOT NULL,
     trade_price DOUBLE PRECISION NOT NULL,
     trade_volume DOUBLE PRECISION NOT NULL,
-    sequential_id BIGINT NOT NULL PRIMARY KEY,
+    sequential_id BIGINT NOT NULL,
+    PRIMARY KEY (trade_date_utc, sequential_id),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 ) PARTITION BY RANGE (trade_date_utc);
 

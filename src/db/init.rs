@@ -171,7 +171,7 @@ fn build_daily_partition_sql(table_name: &str, partition_name: &str, start: &Nai
 fn build_monthly_partition_sql(table_name: &str, partition_name: &str, start: &NaiveDateTime, end: &NaiveDateTime) -> String {
     format!(
         "CREATE TABLE IF NOT EXISTS {} PARTITION OF {} FOR VALUES FROM ('{}') TO ('{}')",
-        partition_name, table_name, start.format("%Y-%m-%d"), end.format("%Y-%m-%d")
+        partition_name, table_name, start.format("%Y-%m-%dT%H:%M:%S"), end.format("%Y-%m-%dT%H:%M:%S")
     )
 }
 
