@@ -1,5 +1,4 @@
 pub mod init;
-pub mod markets;
 pub mod partition;
 
 use sqlx::postgres::{PgPool, PgPoolOptions};

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use sqlx::PgPool;
-use tracing::info;
+
 
 use crate::ws::client::WebSocketClient;
 use crate::config;

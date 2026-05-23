@@ -28,11 +28,19 @@ async fn subscribe_markets(
         return Ok(());
     }
 
+    let ws_type = match type_name {
+        "1s" => "candle.1s",
+        "ticker" => "ticker",
+        "trade" => "trade",
+        "orderbook" => "orderbook",
+        _ => type_name,
+    };
+
     for chunk in markets.chunks(10) {
         let msg = json!([
             {"ticket": uuid::Uuid::new_v4().to_string()},
             {
-                "type": format!("candle.{}", type_name),
+                "type": ws_type,
                 "codes": chunk
             },
             {"format": "DEFAULT"}
@@ -51,10 +59,18 @@ async fn subscribe_new_markets(
         return Ok(());
     }
 
+    let ws_type = match type_name {
+        "1s" => "candle.1s",
+        "ticker" => "ticker",
+        "trade" => "trade",
+        "orderbook" => "orderbook",
+        _ => type_name,
+    };
+
     let msg = json!([
         {"ticket": uuid::Uuid::new_v4().to_string()},
         {
-            "type": format!("candle.{}", type_name),
+            "type": ws_type,
             "codes": markets
         },
         {"format": "DEFAULT"}
